@@ -1,0 +1,17 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.local-data/
+.smoke-data/
+.visual-data*/
+.visual-*/
+.packaged-smoke-data*/
+.packaged-*/
+.scale-*/
+.verify-*/
+.diagnose*.db
+ui-*.png
+build*/
+dist*/
+*.spec

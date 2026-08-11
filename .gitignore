@@ -1,0 +1,24 @@
+# Python / Qt
+**/__pycache__/
+**/*.py[cod]
+03_Program/.venv/
+03_Program/.pytest_cache/
+03_Program/src/*.egg-info/
+
+# Build outputs
+03_Program/build*/
+03_Program/dist*/
+03_Program/*.spec
+03_Program/ui-*.png
+
+# Local data and temporary files
+*.db
+*.db-wal
+*.db-shm
+*.log
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/

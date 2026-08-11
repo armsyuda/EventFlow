@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "event-checklist"
+version = "0.3.1"
+description = "Windows event checklist and schedule manager"
+requires-python = ">=3.11"
+dependencies = [
+  "PySide6>=6.8,<7",
+  "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "pyinstaller>=6,<7"]
+
+[project.scripts]
+event-flow = "event_checklist.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+event_checklist = ["resources/*.json", "resources/assets/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
