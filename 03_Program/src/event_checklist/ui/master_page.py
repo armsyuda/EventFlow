@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
 
 from .dialogs import MasterItemDialog
 from .widgets import (
-    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, UnitComboBox, configure_grouped_editor_table,
-    configure_resizable_table, fit_table_to_view,
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, UnitComboBox, configure_editable_table,
+    fit_table_to_view,
 )
 
 
@@ -62,8 +62,9 @@ class MasterPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
-        configure_grouped_editor_table(self.table)
-        configure_resizable_table(self.table, [60, 92, 116, 160, 240, 76, 88, 120, 90, 136, 126, 116, 88, 88, 90])
+        configure_editable_table(
+            self.table, [60, 92, 116, 160, 240, 76, 88, 120, 90, 136, 126, 116, 88, 88, 90], grouped=True
+        )
         self.table.cellChanged.connect(self._cell_changed)
         root.addWidget(self.table, 1)
         note = QLabel(

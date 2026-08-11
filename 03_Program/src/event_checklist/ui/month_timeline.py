@@ -4,7 +4,7 @@ import calendar
 from datetime import date, timedelta
 
 from PySide6.QtCore import QEvent, QPoint, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QToolTip, QWidget
 
 
@@ -93,7 +93,7 @@ class MonthTimeline(QWidget):
         for col in range(8): painter.drawLine(QPoint(int(col * cell_w), header_h), QPoint(int(col * cell_w), self.height()))
         for row in range(7): painter.drawLine(QPoint(0, int(header_h + row * row_h)), QPoint(self.width(), int(header_h + row * row_h)))
 
-        lane_h, top_gap = 16, 29
+        lane_h, top_gap = 20, 29
         lane_capacity = max(1, int((row_h - top_gap - 17) // (lane_h + 2)))
         for week_index, week in enumerate(self._weeks):
             y = header_h + week_index * row_h
@@ -114,8 +114,16 @@ class MonthTimeline(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(base)
                 path = QPainterPath(); path.addRoundedRect(bar, 4 if is_start or is_end else 1, 4 if is_start or is_end else 1)
                 painter.drawPath(path)
-                painter.setPen(QColor("#394047")); painter.setFont(QFont("Malgun Gothic", 7))
-                painter.drawText(bar.adjusted(5, 0, -3, 0), Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine, task["name"])
+                painter.setPen(QColor("#30353B")); painter.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Medium))
+                metrics = QFontMetrics(painter.font())
+                available = max(1, int(bar.width()) - 10)
+                label_width = metrics.horizontalAdvance(task["name"])
+                repeat_count = min(3, max(1, available // max(150, label_width + 48)))
+                slice_width = available / repeat_count
+                for repeat in range(repeat_count):
+                    label_rect = QRectF(bar.left() + 5 + repeat * slice_width, bar.top(), slice_width - 4, bar.height())
+                    label = metrics.elidedText(task["name"], Qt.TextElideMode.ElideRight, max(1, int(label_rect.width())))
+                    painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextSingleLine, label)
                 tooltip = f"{task['name']}\n{task['planned_start']} ~ {task['due_date']}"
                 self._hits.append((bar, tooltip))
             for column, count in enumerate(hidden):

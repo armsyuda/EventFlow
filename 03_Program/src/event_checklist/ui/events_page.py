@@ -13,8 +13,8 @@ from ..schedule import d_day, d_day_label
 from ..theme import status_color
 from .dialogs import CustomTaskDialog, MasterImportDialog, TaskDetailsDialog
 from .widgets import (
-    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, DirectDateEdit, configure_grouped_editor_table,
-    configure_money_spin, configure_resizable_table, fit_table_to_view,
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, DirectDateEdit, configure_editable_table,
+    configure_money_spin, fit_table_to_view,
 )
 
 STATUSES = ["미착수", "진행중", "확인요청", "완료", "보류", "해당없음"]
@@ -99,8 +99,9 @@ class EventsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        configure_grouped_editor_table(self.table)
-        configure_resizable_table(self.table, [58, 130, 210, 112, 88, 125, 125, 125, 72, 65, 135, 140])
+        configure_editable_table(
+            self.table, [58, 130, 210, 112, 88, 125, 125, 125, 72, 65, 135, 140], grouped=True
+        )
         self.table.doubleClicked.connect(self.edit_task_details)
         root.addWidget(self.table, 1)
 

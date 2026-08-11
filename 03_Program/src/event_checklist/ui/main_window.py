@@ -92,12 +92,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(title); layout.addWidget(subtitle)
         names = ["대시보드", "체크리스트", "달력", "정산내역", "설정"]
         self.nav_group = QButtonGroup(sidebar); self.nav_group.setExclusive(True); self.nav_buttons = []
-        for index, name in enumerate(names):
+        for index, name in enumerate(names[:4]):
             button = QPushButton(name); button.setCheckable(True); button.setProperty("nav", True)
             button.clicked.connect(lambda _checked=False, value=index: self._navigate(value))
             self.nav_group.addButton(button, index); self.nav_buttons.append(button); layout.addWidget(button)
-        layout.addStretch(); version = QLabel(f"이벤트 플로우 {__version__}"); version.setObjectName("Muted")
+        layout.addStretch()
+        version = QLabel(f"이벤트 플로우 {__version__}"); version.setObjectName("Muted")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(version)
+        separator = QFrame(); separator.setFrameShape(QFrame.Shape.HLine); separator.setObjectName("SidebarSeparator")
+        layout.addWidget(separator)
+        settings = QPushButton(names[4]); settings.setCheckable(True); settings.setProperty("nav", True)
+        settings.clicked.connect(lambda _checked=False: self._navigate(4))
+        self.nav_group.addButton(settings, 4); self.nav_buttons.append(settings); layout.addWidget(settings)
         return sidebar
 
     def _navigate(self, index):
