@@ -232,13 +232,19 @@ class EventService:
         if event_id:
             sql += " AND t.event_id=?"
             params.append(event_id)
-        sql += " ORDER BY t.due_date,t.sort_order"
+        sql += """ ORDER BY
+            CASE WHEN t.status='완료' THEN 1 ELSE 0 END,
+            CASE WHEN t.status<>'완료' AND t.due_date < date('now','localtime') THEN 0 ELSE 1 END,
+            t.due_date,
+            CASE t.priority WHEN '상' THEN 1 WHEN '중' THEN 2 ELSE 3 END,
+            t.sort_order"""
         return self.db.query(sql, params)
 
     def calendar_range(self, first: date, last: date, event_id: int | None = None):
         sql = """
             SELECT id,event_id,name,major,priority,sort_order,planned_start,due_date,status
-            FROM event_tasks WHERE is_removed=0 AND due_date>=? AND planned_start<=?
+            FROM event_tasks WHERE is_removed=0 AND status NOT IN ('완료','해당없음')
+              AND due_date>=? AND planned_start<=?
         """
         params: list[object] = [first.isoformat(), last.isoformat()]
         if event_id:

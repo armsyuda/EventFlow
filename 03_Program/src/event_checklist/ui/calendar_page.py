@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date
+from datetime import date, timedelta
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtWidgets import QCalendarWidget, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget
 
 from ..schedule import d_day, d_day_label
 from ..theme import status_color
@@ -12,22 +12,70 @@ from .month_timeline import MonthTimeline
 
 
 class CalendarTaskCard(QFrame):
+    completion_requested = Signal(int, bool)
+    postpone_requested = Signal(int, object)
+
     def __init__(self, task, parent=None):
         super().__init__(parent)
+        self.task = dict(task)
+        self.task_id = int(task["id"])
         self.setObjectName("CalendarTaskCard")
-        layout = QVBoxLayout(self); layout.setContentsMargins(14, 10, 14, 10); layout.setSpacing(4)
+        due = date.fromisoformat(task["due_date"])
+        overdue = task["status"] != "완료" and due < date.today()
+        due_today = task["status"] != "완료" and due == date.today()
+        urgency = "completed" if task["status"] == "완료" else ("critical" if overdue else ("dueToday" if due_today else "normal"))
+        self.setProperty("urgency", urgency)
+        layout = QVBoxLayout(self); layout.setContentsMargins(14, 11, 14, 11); layout.setSpacing(7)
         top = QHBoxLayout()
         name = QLabel(task["name"]); name.setObjectName("CalendarTaskName"); name.setWordWrap(True)
-        fg, bg = status_color(task["status"])
-        badge = QLabel(task["status"]); badge.setObjectName("StatusBadge"); badge.setStyleSheet(f"color:{fg};background:{bg};")
+        badge_text = f"지연 · {task['status']}" if overdue else ("오늘 마감" if due_today else task["status"])
+        fg, bg = (("#C9342C", "#FDECEC") if overdue else
+                  (("#B54708", "#FFF2D6") if due_today else status_color(task["status"])))
+        badge = QLabel(badge_text); badge.setObjectName("StatusBadge"); badge.setStyleSheet(f"color:{fg};background:{bg};")
         top.addWidget(name, 1); top.addWidget(badge); layout.addLayout(top)
-        due = date.fromisoformat(task["due_date"])
         suffix = "완료" if task["status"] == "완료" else d_day_label(d_day(due))
-        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {suffix}")
+        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {suffix} · 우선순위 {task['priority']}")
         meta.setObjectName("Muted"); layout.addWidget(meta)
+        if due_today:
+            due_guide = QLabel("오늘까지 완료하거나 아래에서 마감일을 연장하세요.")
+            due_guide.setObjectName("DueTodayGuide")
+            layout.addWidget(due_guide)
+        actions = QHBoxLayout(); actions.setSpacing(5)
+        complete = QPushButton("↩ 완료 취소" if task["status"] == "완료" else "완료 처리")
+        complete.setProperty("compact", True)
+        complete.setProperty("success", task["status"] == "완료")
+        complete.setProperty("primary", task["status"] != "완료")
+        complete.clicked.connect(lambda: self.completion_requested.emit(self.task_id, task["status"] != "완료"))
+        actions.addWidget(complete)
+        if due_today:
+            tomorrow = QPushButton("내일까지"); tomorrow.setProperty("compact", True); tomorrow.setProperty("warning", True)
+            day_after = QPushButton("모레까지"); day_after.setProperty("compact", True); day_after.setProperty("warning", True)
+            choose = QPushButton("날짜 선택"); choose.setProperty("compact", True)
+            tomorrow.clicked.connect(lambda: self.postpone_requested.emit(self.task_id, date.today() + timedelta(days=1)))
+            day_after.clicked.connect(lambda: self.postpone_requested.emit(self.task_id, date.today() + timedelta(days=2)))
+            choose.clicked.connect(lambda: self._open_calendar(choose))
+            actions.addWidget(tomorrow); actions.addWidget(day_after); actions.addWidget(choose)
+        actions.addStretch(); layout.addLayout(actions)
+
+    def _open_calendar(self, anchor):
+        calendar_popup = QCalendarWidget(self)
+        calendar_popup.setWindowFlags(Qt.WindowType.Popup)
+        calendar_popup.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        calendar_popup.setGridVisible(True)
+        calendar_popup.setMinimumDate(QDate.currentDate())
+        calendar_popup.setSelectedDate(QDate.fromString(self.task["due_date"], "yyyy-MM-dd"))
+        calendar_popup.setFixedSize(340, 270)
+        calendar_popup.clicked.connect(
+            lambda selected: (self.postpone_requested.emit(self.task_id, selected.toPython()), calendar_popup.close())
+        )
+        calendar_popup.move(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+        calendar_popup.show(); calendar_popup.raise_(); calendar_popup.activateWindow()
+        self._calendar_popup = calendar_popup
 
 
 class CalendarPage(QWidget):
+    changed = Signal(int)
+
     def __init__(self, service, db=None, parent=None):
         super().__init__(parent)
         self.service = service
@@ -97,5 +145,23 @@ class CalendarPage(QWidget):
             self.list.hide(); self.empty.show(); return
         self.empty.hide(); self.list.show()
         for task in tasks:
-            item = QListWidgetItem(); item.setSizeHint(item.sizeHint().__class__(0, 82)); self.list.addItem(item)
-            self.list.setItemWidget(item, CalendarTaskCard(task, self.list))
+            due_today = task["status"] != "완료" and task["due_date"] == date.today().isoformat()
+            item = QListWidgetItem(); item.setSizeHint(item.sizeHint().__class__(0, 148 if due_today else 112)); self.list.addItem(item)
+            card = CalendarTaskCard(task, self.list)
+            card.completion_requested.connect(self._set_completed)
+            card.postpone_requested.connect(self._postpone)
+            self.list.setItemWidget(item, card)
+
+    def _set_completed(self, task_id: int, completed: bool):
+        self.service.set_completed(task_id, completed)
+        self.refresh()
+        self.changed.emit(self.event_id or 0)
+
+    def _postpone(self, task_id: int, new_due: date):
+        try:
+            self.service.update_task(task_id, due_date=new_due.isoformat())
+        except ValueError as exc:
+            QMessageBox.warning(self, "일정 연기 확인", str(exc))
+            return
+        self.refresh()
+        self.changed.emit(self.event_id or 0)

@@ -27,7 +27,7 @@ def test_v1_database_migrates_and_keeps_safety_copy(tmp_path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(master_items)")}
     assert {"default_vendor_id", "default_assignee_id"} <= columns
-    assert db.one("SELECT version FROM schema_info")["version"] == 4
+    assert db.one("SELECT version FROM schema_info")["version"] == 5
     assert db.one("SELECT COUNT(*) count FROM master_items")["count"] == 120
     db.close()
     assert (tmp_path / "legacy.pre-v1.db").exists()
@@ -75,6 +75,24 @@ def test_v3_cost_migrates_to_unit_price_and_keeps_pre_v3_copy(tmp_path):
     db.execute("UPDATE schema_info SET version=3"); db.close()
     migrated = Database(path)
     assert migrated.one("SELECT unit_price FROM event_tasks WHERE event_id=?", (event_id,))["unit_price"] == 3000
-    assert migrated.one("SELECT version FROM schema_info")["version"] == 4
+    assert migrated.one("SELECT version FROM schema_info")["version"] == 5
     migrated.close()
     assert (tmp_path / "event_checklist.pre-v3.db").exists()
+
+
+def test_v4_blank_units_are_filled_without_overwriting_user_values(tmp_path):
+    path = tmp_path / "units.db"
+    db = Database(path); service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY id LIMIT 2")
+    event_id = service.create_event("단위 이전", date(2026, 9, 1), None, [row["id"] for row in masters])
+    db.execute("UPDATE master_items SET unit='' WHERE id=?", (masters[0]["id"],))
+    db.execute("UPDATE master_items SET unit='사용자단위' WHERE id=?", (masters[1]["id"],))
+    db.execute("UPDATE event_tasks SET unit='' WHERE master_item_id=?", (masters[0]["id"],))
+    db.execute("UPDATE schema_info SET version=4"); db.close()
+
+    migrated = Database(path)
+    assert migrated.one("SELECT unit FROM master_items WHERE id=?", (masters[0]["id"],))["unit"] == "식"
+    assert migrated.one("SELECT unit FROM master_items WHERE id=?", (masters[1]["id"],))["unit"] == "사용자단위"
+    assert migrated.one("SELECT unit FROM event_tasks WHERE event_id=? AND master_item_id=?", (event_id, masters[0]["id"]))["unit"] == "식"
+    migrated.close()
+    assert (tmp_path / "units.pre-v4.db").exists()

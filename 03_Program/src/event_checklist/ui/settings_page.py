@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from ..backup import create_backup, restore_backup
 from .. import __version__
+from ..config import install_dir
 from ..export import export_csv, export_excel
 from .contacts_page import ContactsPage
 from .master_page import MasterPage
@@ -62,7 +63,14 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(12, 16, 12, 12)
         layout.addWidget(self._section(
             "이벤트 플로우 · 이플",
-            f"행사 준비 체크리스트, 일정과 예산 배분을 한곳에서 관리하는 Windows 로컬 프로그램입니다.\n버전 {__version__}",
+            f"행사 준비 체크리스트, 일정과 예산 배분을 한곳에서 관리하는 Windows 로컬 프로그램입니다.\n"
+            f"버전 {__version__}\n설치 위치: {install_dir()}",
+            [],
+        ))
+        layout.addWidget(self._section(
+            "앱 업데이트",
+            "앱을 시작할 때 GitHub 공개 릴리스를 확인합니다. 새 버전이 있으면 상단의 업데이트 버튼으로 "
+            "현재 설치 파일을 자동 교체하며, 행사 데이터와 백업은 그대로 유지됩니다.",
             [],
         ))
         layout.addStretch()

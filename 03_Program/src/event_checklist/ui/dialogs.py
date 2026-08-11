@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .widgets import DirectDateEdit, configure_money_spin
+from .widgets import DirectDateEdit, UnitComboBox, configure_money_spin, configure_quantity_spin
 
 
 class EventDialog(QDialog):
@@ -102,7 +102,7 @@ class EventDialog(QDialog):
             root.addLayout(row)
             self.tree = QTreeWidget()
             self.tree.setMinimumHeight(90)
-            self.tree.setHeaderLabels(["분류 / 항목", "기본 일정", "우선순위"])
+            self.tree.setHeaderLabels(["분류 / 항목", "행사일 기준 일정", "우선순위"])
             self.tree.setColumnWidth(0, 440)
             self._populate_tree()
             all_button.clicked.connect(lambda: self._set_all(Qt.CheckState.Checked))
@@ -139,8 +139,8 @@ class EventDialog(QDialog):
                 parent.setFlags(parent.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
                 parent.setCheckState(0, Qt.CheckState.Checked)
                 parents[(major, minor)] = parent
-            anchor = "시작" if item["anchor"] == "START" else "종료"
-            child = QTreeWidgetItem(parent, [item["name"], f"{anchor} {item['start_offset']:+d}~{item['due_offset']:+d}일", item["priority"]])
+            anchor = "행사 시작일" if item["anchor"] == "START" else "행사 종료일"
+            child = QTreeWidgetItem(parent, [item["name"], f"{anchor} D{item['start_offset']:+d} ~ D{item['due_offset']:+d}", item["priority"]])
             child.setData(0, Qt.ItemDataRole.UserRole, item["id"])
             child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             child.setCheckState(0, Qt.CheckState.Checked)
@@ -241,7 +241,8 @@ class MasterImportDialog(QDialog):
                 parent_item.setCheckState(0, Qt.CheckState.Unchecked)
                 parents[key] = parent_item
             state = "제외 기록 복원" if row["is_removed"] else "새로 추가"
-            child = QTreeWidgetItem(parent_item, [row["name"], f"{row['start_offset']:+d} ~ {row['due_offset']:+d}일", state])
+            anchor = "행사 시작일" if row["anchor"] == "START" else "행사 종료일"
+            child = QTreeWidgetItem(parent_item, [row["name"], f"{anchor} D{row['start_offset']:+d} ~ D{row['due_offset']:+d}", state])
             child.setData(0, Qt.ItemDataRole.UserRole, int(row["id"]))
             child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             child.setCheckState(0, Qt.CheckState.Unchecked)
@@ -291,9 +292,9 @@ class CustomTaskDialog(QDialog):
         self.due.setDate(QDate.fromString(event["end_date"] or event["start_date"], "yyyy-MM-dd"))
         self.quantity = QDoubleSpinBox()
         self.quantity.setRange(0, 999_999_999)
-        self.quantity.setDecimals(2)
+        configure_quantity_spin(self.quantity)
         self.quantity.setValue(1)
-        self.unit = QLineEdit()
+        self.unit = UnitComboBox("식")
         self.price = QDoubleSpinBox()
         self.price.setRange(0, 999_999_999_999)
         configure_money_spin(self.price)
@@ -323,7 +324,7 @@ class CustomTaskDialog(QDialog):
         return {"major": self.major.currentText().strip(), "minor": self.minor.text().strip(),
                 "name": self.name.text().strip(), "detail": self.detail.toPlainText().strip(),
                 "planned_start": self.start.date().toPython(), "due_date": self.due.date().toPython(),
-                "quantity": self.quantity.value(), "unit": self.unit.text().strip(),
+                "quantity": int(self.quantity.value()), "unit": self.unit.currentText().strip() or "식",
                 "unit_price": int(self.price.value()) or None, "vat_type": self.vat.currentData()}
 
 
@@ -381,9 +382,9 @@ class MasterItemDialog(QDialog):
         self.detail.setMaximumHeight(100)
         self.quantity = QDoubleSpinBox()
         self.quantity.setRange(0, 999_999_999)
-        self.quantity.setDecimals(2)
+        configure_quantity_spin(self.quantity)
         self.quantity.setValue((item["quantity"] or 0) if item else 0)
-        self.unit = QLineEdit(item["unit"] if item else "")
+        self.unit = UnitComboBox(item["unit"] if item and item["unit"] else "식")
         self.base_unit_price = QDoubleSpinBox()
         self.base_unit_price.setRange(0, 999_999_999_999)
         configure_money_spin(self.base_unit_price)
@@ -431,10 +432,12 @@ class MasterItemDialog(QDialog):
         form.addRow("기본 업체", self.vendor)
         form.addRow("기본 담당", self.assignee)
         form.addRow("일정 기준", self.anchor)
-        form.addRow("작업 시작 오프셋", self.start_offset)
-        form.addRow("마감 오프셋", self.due_offset)
+        form.addRow("작업 시작일 (D±)", self.start_offset)
+        form.addRow("작업 마감일 (D±)", self.due_offset)
         form.addRow("우선순위", self.priority)
         layout.addLayout(form)
+        guide = QLabel("D-30은 선택한 일정 기준일 30일 전, D+1은 기준일 다음 날을 뜻합니다.")
+        guide.setObjectName("InfoGuide"); guide.setWordWrap(True); layout.addWidget(guide)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
@@ -455,8 +458,8 @@ class MasterItemDialog(QDialog):
             "minor": self.minor.currentText().strip(),
             "name": self.name.text().strip(),
             "detail": self.detail.toPlainText().strip(),
-            "quantity": self.quantity.value() or None,
-            "unit": self.unit.text().strip(),
+            "quantity": int(self.quantity.value()) or None,
+            "unit": self.unit.currentText().strip() or "식",
             "base_unit_price": int(self.base_unit_price.value()) or None,
             "default_vat_type": self.vat_type.currentData(),
             "default_vendor_id": self.vendor.currentData(),
@@ -488,9 +491,9 @@ class TaskDetailsDialog(QDialog):
         self.detail.setMaximumHeight(120)
         self.quantity = QDoubleSpinBox()
         self.quantity.setRange(0, 999_999_999)
-        self.quantity.setDecimals(2)
+        configure_quantity_spin(self.quantity)
         self.quantity.setValue(task["quantity"] or 0)
-        self.unit = QLineEdit(task["unit"] or "")
+        self.unit = UnitComboBox(task["unit"] or "식")
         self.note = QTextEdit(task["note"])
         self.note.setPlaceholderText("이 행사에서만 사용하는 메모를 입력하세요.")
         self.note.setMaximumHeight(140)
@@ -507,7 +510,7 @@ class TaskDetailsDialog(QDialog):
     def values(self):
         return {
             "detail": self.detail.toPlainText().strip(),
-            "quantity": self.quantity.value() or None,
-            "unit": self.unit.text().strip(),
+            "quantity": int(self.quantity.value()) or None,
+            "unit": self.unit.currentText().strip() or "식",
             "note": self.note.toPlainText().strip(),
         }

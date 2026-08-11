@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import TOKENS
-from .widgets import KpiCard, configure_money_spin, configure_resizable_table, fit_table_to_view
+from .widgets import KpiCard, UnitComboBox, configure_money_spin, configure_quantity_spin, configure_resizable_table, fit_table_to_view
 
 
 def money(value) -> str:
@@ -132,12 +132,12 @@ class SettlementPage(QWidget):
             self.table.setItem(row, column, cell)
         quantity = QDoubleSpinBox()
         quantity.setRange(0, 999_999_999)
-        quantity.setDecimals(2)
+        configure_quantity_spin(quantity)
         quantity.setValue(item["quantity"] or 0)
-        quantity.editingFinished.connect(lambda tid=task_id,w=quantity:self._update(tid,quantity=w.value() or None))
+        quantity.editingFinished.connect(lambda tid=task_id,w=quantity:self._update(tid,quantity=int(w.value()) or None))
         self.table.setCellWidget(row, 3, quantity)
-        unit = QLineEdit(item["unit"] or "")
-        unit.editingFinished.connect(lambda tid=task_id,w=unit:self._update(tid,unit=w.text().strip()))
+        unit = UnitComboBox(item["unit"] or "식")
+        unit.value_committed.connect(lambda value, tid=task_id:self._update(tid,unit=value))
         self.table.setCellWidget(row, 4, unit)
         price = QDoubleSpinBox()
         price.setRange(0, 999_999_999_999)

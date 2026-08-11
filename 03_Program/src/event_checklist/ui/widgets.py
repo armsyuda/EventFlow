@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-from PySide6.QtCore import QDate, QLocale, QRect, Qt
+from PySide6.QtCore import QDate, QEvent, QLocale, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QCalendarWidget, QDateEdit, QDoubleSpinBox, QFrame, QHeaderView, QLabel, QTableWidget, QVBoxLayout
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QCalendarWidget, QComboBox, QDateEdit, QDoubleSpinBox, QFrame, QHeaderView, QLabel, QTableWidget, QVBoxLayout
 
 from ..theme import TOKENS
+from ..units import COMMON_UNITS
 
 
 class DirectDateEdit(QDateEdit):
@@ -17,26 +18,59 @@ class DirectDateEdit(QDateEdit):
         super().__init__(parent)
         self.setProperty("directCalendar", True)
         self.setDisplayFormat("yyyy-MM-dd")
-        self._direct_calendar = QCalendarWidget()
-        self._direct_calendar.setWindowFlags(Qt.WindowType.Popup)
-        self._direct_calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        self._direct_calendar.setGridVisible(True)
-        self._direct_calendar.setFixedSize(340, 270)
-        self._direct_calendar.clicked.connect(self._choose_date)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lineEdit().installEventFilter(self)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 표에는 날짜 입력칸이 수백 개 생길 수 있다. 달력은 실제 클릭할 때만
+        # 하나씩 만들어 초기 체크리스트 표시 비용을 줄인다.
+        self._direct_calendar: QCalendarWidget | None = None
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            self._open_calendar()
+            event.accept()
+            return
         super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled(): self._open_calendar()
+
+    def eventFilter(self, watched, event):
+        if watched is self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+                self._open_calendar()
+                return True
+        return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space) and self.isEnabled():
+            self._open_calendar()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _open_calendar(self):
-        self._direct_calendar.setSelectedDate(self.date())
-        self._direct_calendar.move(self.mapToGlobal(self.rect().bottomLeft()))
-        self._direct_calendar.show(); self._direct_calendar.raise_(); self._direct_calendar.activateWindow()
+        calendar = self._ensure_calendar()
+        calendar.setSelectedDate(self.date())
+        calendar.move(self.mapToGlobal(self.rect().bottomLeft()))
+        calendar.show(); calendar.raise_(); calendar.activateWindow()
 
     def _choose_date(self, value: QDate):
-        self.setDate(value); self._direct_calendar.hide()
+        self.setDate(value)
+        if self._direct_calendar:
+            self._direct_calendar.hide()
 
     def calendarWidget(self):
+        return self._ensure_calendar()
+
+    def _ensure_calendar(self) -> QCalendarWidget:
+        if self._direct_calendar is None:
+            calendar = QCalendarWidget(self)
+            calendar.setWindowFlags(Qt.WindowType.Popup)
+            calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+            calendar.setGridVisible(True)
+            calendar.setFixedSize(340, 270)
+            calendar.clicked.connect(self._choose_date)
+            self._direct_calendar = calendar
         return self._direct_calendar
 
 
@@ -49,6 +83,39 @@ def configure_money_spin(widget: QDoubleSpinBox, suffix: str = " 원") -> QDoubl
     widget.setSuffix(suffix)
     widget.setAlignment(Qt.AlignmentFlag.AlignRight)
     return widget
+
+
+def configure_quantity_spin(widget: QDoubleSpinBox) -> QDoubleSpinBox:
+    """수량을 자연수 중심으로 표시하고 증감 화살표를 숨긴다."""
+    widget.setDecimals(0)
+    widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    widget.setGroupSeparatorShown(True)
+    widget.setAlignment(Qt.AlignmentFlag.AlignRight)
+    widget.setProperty("quantityInput", True)
+    return widget
+
+
+class UnitComboBox(QComboBox):
+    value_committed = Signal(str)
+
+    def __init__(self, value: str = "", parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.addItems(COMMON_UNITS)
+        self.setCurrentText(value or "식")
+        self._last_value = self.currentText().strip()
+        self.activated.connect(self._commit)
+        self.lineEdit().editingFinished.connect(self._commit)
+        self.setToolTip("목록에서 선택하거나 필요한 단위를 직접 입력할 수 있습니다.")
+
+    def _commit(self, *_args):
+        value = self.currentText().strip() or "식"
+        if value == self._last_value:
+            return
+        self._last_value = value
+        self.setCurrentText(value)
+        self.value_committed.emit(value)
 
 
 class KpiCard(QFrame):
