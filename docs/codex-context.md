@@ -131,3 +131,4 @@ Windows 10/11에서 한 사람이 행사별 준비 업무를 관리하는 Python
 - PowerShell 작업 위치와 Python `Popen.cwd`를 `%LOCALAPPDATA%\EventCheckList\updates`로 고정했다.
 - 압축 해제부터 새 앱 health 확인까지 전체 과정을 하나의 복구 범위로 묶었다. 교체 전 실패도 기존 앱을 다시 실행하며 `update-버전.log`에 단계와 오류를 기록한다.
 - 격리된 실제 설치 폴더 복사본에서 성공 경로는 `EXTRACT→SWAP→LAUNCH→SUCCESS`, 잘못된 ZIP 실패 경로는 `FAILED→RECOVERY`와 기존 앱 재실행을 확인했다.
+- 기존 v0.3.4 업데이터 자체에는 수정 코드를 소급할 수 없어 v0.3.6을 한 번 수동 복구 설치했다. 다음 v0.3.7은 v0.3.6의 인앱 업데이트 버튼으로 설치·재실행을 실제 검증하기 위한 릴리스다.
