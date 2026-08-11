@@ -132,7 +132,13 @@ $health = '{ps(health_file)}'
 $log = '{ps(log_file)}'
 $scriptRoot = '{ps(script_dir)}'
 function Write-UpdateLog([string]$message) {{
-    Add-Content -LiteralPath $log -Encoding UTF8 -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') $message"
+    # A log reader (support tool, antivirus, or Explorer preview) can briefly
+    # lock the file. Diagnostics must never be able to cancel an update.
+    try {{
+        Add-Content -LiteralPath $log -Encoding UTF8 -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') $message"
+    }} catch {{
+        # Best-effort logging only; the install/rollback path remains primary.
+    }}
 }}
 $swapped = $false
 try {{
