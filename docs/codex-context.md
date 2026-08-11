@@ -82,4 +82,6 @@ Windows 10/11에서 한 사람이 행사별 준비 업무를 관리하는 Python
 - Git 저장소를 `https://github.com/armsyuda/EventFlow.git`의 `origin`으로 연결하고 Windows 빌드·Release 워크플로를 추가했다.
 - 앱 시작 시 공개 GitHub Release를 비동기로 확인한다. 현재 버전보다 높은 태그와 `EventFlow-Windows.zip`이 있으면 상단 업데이트 버튼을 활성화하며, GitHub가 제공하는 SHA-256 digest를 검증한 뒤 앱 폴더를 교체하고 재실행한다. 사용자 DB는 설치 폴더 밖에 있어 유지된다.
 - 자동 업데이트에 인증 토큰을 내장하지 않는다. 저장소 또는 Release가 비공개이면 앱에는 `업데이트 확인 불가`가 표시되므로 공개 Release 운영이 필요하다.
+- GitHub Actions 실행 `31446787924`가 성공했고 공개 전환 준비가 된 `v0.3.3` Release에 `EventFlow-Windows.zip`과 SHA-256 파일이 생성되었다. Release ZIP을 다시 내려받아 digest 일치와 실행 파일 종료 코드 0을 확인했다.
 - 검증: pytest 30개 통과. 날짜 입력 클릭 시 달력 표시, 금액 쉼표·화살표 제거, Release 버전 비교와 다운로드 digest 검증을 자동 테스트했다.
+- 사용자가 기존 `dist/EventFlow/EventFlow.exe`를 실행 중이어서 해당 폴더는 덮어쓰지 않았다. 검증된 최신 로컬 배포본은 `03_Program/dist-0.3.3-release/EventFlow.exe`다.
