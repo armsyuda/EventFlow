@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib.resources import files
 
 from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtWidgets import QAbstractButton, QComboBox, QListView, QTabBar, QTreeView
 
 
 TOKENS = {
@@ -41,6 +42,19 @@ class ComboPopupPolisher(QObject):
         return False
 
 
+class InteractionCursorPolisher(QObject):
+    """Use a hand cursor for controls and selectable lists that react to clicks."""
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Polish and isinstance(
+            watched, (QAbstractButton, QComboBox, QTabBar, QListView, QTreeView)
+        ):
+            watched.setCursor(Qt.CursorShape.PointingHandCursor)
+            if isinstance(watched, (QListView, QTreeView)):
+                watched.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+        return False
+
+
 def application_stylesheet() -> str:
     c = TOKENS
     checkmark = str(files("event_checklist").joinpath("resources/assets/checkmark.svg")).replace("\\", "/")
@@ -66,6 +80,10 @@ def application_stylesheet() -> str:
     QPushButton#UpdateButton:enabled:hover {{ background: {c['brand_pressed']}; }}
     QFrame#Sidebar {{ background: {c['bg_layer']}; border-right: 1px solid {c['stroke']}; }}
     QFrame#SidebarSeparator {{ background: {c['stroke']}; border: none; max-height: 1px; }}
+    QPushButton#HistoryButton {{ min-width: 0; min-height: 38px; padding: 0; font-size: 24px; font-weight: 700; }}
+    QPushButton#HistoryButton:disabled {{ color: #C7CAD0; background: {c['bg_weak']}; }}
+    QPushButton#SidebarSaveButton {{ min-height: 40px; font-weight: 700; color: {c['brand']}; background: {c['brand_weak']}; border-color: #FFD0BC; }}
+    QPushButton#SidebarSaveButton:hover {{ background: #FFE2D6; }}
     QLabel#AppTitle {{ font-size: 18px; font-weight: 700; color: {c['brand']}; padding: 8px; }}
     QLabel#PageTitle {{ font-size: 26px; font-weight: 700; }}
     QLabel#PageDescription, QLabel#Muted {{ color: {c['fg_muted']}; }}
@@ -193,6 +211,7 @@ def application_stylesheet() -> str:
     QSplitter::handle {{ background: {c['bg_weak']}; border-radius: 3px; }}
     QSplitter::handle:hover {{ background: #DDE0E4; }}
     QFrame#CalendarSide {{ background: {c['bg_weak']}; border: 1px solid {c['stroke']}; border-radius: 12px; }}
+    QFrame#EventItemsPanel {{ background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 12px; }}
     QListWidget#CalendarTaskList {{ background: transparent; border: none; }}
     QListWidget#CalendarTaskList::item {{ background: transparent; border: none; }}
     QListWidget#CalendarTaskList::item:selected {{ background: transparent; color: {c['fg_neutral']}; }}

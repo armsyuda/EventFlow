@@ -25,6 +25,10 @@ def backup_dir() -> Path:
     return data_root() / "backups"
 
 
+def history_dir() -> Path:
+    return data_root() / "history"
+
+
 def update_dir() -> Path:
     return data_root() / "updates"
 
@@ -39,4 +43,5 @@ def install_dir() -> Path:
 def ensure_directories() -> None:
     database_path().parent.mkdir(parents=True, exist_ok=True)
     backup_dir().mkdir(parents=True, exist_ok=True)
+    history_dir().mkdir(parents=True, exist_ok=True)
     update_dir().mkdir(parents=True, exist_ok=True)

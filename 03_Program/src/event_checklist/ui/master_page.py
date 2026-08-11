@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QAbstractItemView, QCheckBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .dialogs import MasterItemDialog
 from .widgets import (
-    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, UnitComboBox, configure_editable_table,
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, FastEditableTable, configure_editable_table,
     fit_table_to_view,
 )
+from ..choices import load_master_choice_catalog
 
 
 class MasterPage(QWidget):
@@ -50,10 +51,11 @@ class MasterPage(QWidget):
         top.addWidget(delete_button)
         top.addWidget(add_button)
         root.addLayout(top)
-        self.table = QTableWidget(0, 15)
+        self.table = FastEditableTable(0, 14)
+        self.table.set_money_columns({7})
         self.table.setHorizontalHeaderLabels([
-            "사용", "대분류", "중분류", "항목", "확인 포인트", "수량", "단위", "기준 단가", "VAT",
-            "업체", "담당", "일정 기준", "시작 D±", "마감 D±", "우선순위",
+            "순서", "대분류", "중분류", "항목", "확인 포인트", "수량", "단위", "기준 단가", "VAT",
+            "업체", "담당", "일정 기준", "시작 D±", "마감 D±",
         ])
         self.table.horizontalHeaderItem(11).setToolTip("행사 시작일 또는 행사 종료일 중 자동 일정의 기준일입니다.")
         self.table.horizontalHeaderItem(12).setToolTip("D-30은 기준일 30일 전, D+1은 기준일 1일 후에 작업을 시작한다는 뜻입니다.")
@@ -63,9 +65,11 @@ class MasterPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         configure_editable_table(
-            self.table, [60, 92, 116, 160, 240, 76, 88, 120, 90, 136, 126, 116, 88, 88, 90], grouped=True
+            self.table, [52, 92, 116, 160, 240, 76, 88, 120, 90, 136, 126, 116, 88, 88], grouped=True
         )
+        self.table.set_fixed_columns({0: 52})
         self.table.cellChanged.connect(self._cell_changed)
+        self.table.cellClicked.connect(self._open_cell_editor)
         root.addWidget(self.table, 1)
         note = QLabel(
             "일정 기준이 ‘행사 시작일’이고 시작 D-30·마감 D-7이면 행사 30일 전부터 7일 전까지의 업무입니다. "
@@ -97,93 +101,97 @@ class MasterPage(QWidget):
 
     def refresh(self):
         self.loading = True
+        self.table.setUpdatesEnabled(False)
         self.table.blockSignals(True)
         rows = self.rows()
+        self.table.reset_spans()
+        self.table.clearContents()
         self.table.setRowCount(len(rows))
         people, vendors = self._contacts()
+        self._people, self._vendors = people, vendors
         for r, item in enumerate(rows):
-            check = QCheckBox()
-            check.setChecked(bool(item["active"]))
-            check.toggled.connect(lambda value, item_id=item["id"]: self.db.execute("UPDATE master_items SET active=? WHERE id=?", (1 if value else 0, item_id)))
-            holder = QWidget()
-            h = QHBoxLayout(holder)
-            h.setContentsMargins(0, 0, 0, 0)
-            h.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            h.addWidget(check)
-            self.table.setCellWidget(r, 0, holder)
+            order = QTableWidgetItem(str(r + 1))
+            order.setData(Qt.ItemDataRole.UserRole, item["id"])
+            order.setFlags(order.flags() & ~(Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsUserCheckable))
+            self.table.setItem(r, 0, order)
             quantity = "" if item["quantity"] is None else f"{item['quantity']:g}"
             values = [item["major"], item["minor"], item["name"], item["detail"], quantity]
             for c, value in enumerate(values, 1):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.ItemDataRole.UserRole, item["id"])
                 self.table.setItem(r, c, cell)
-            group = self.table.item(r, 1)
-            group.setData(GROUP_MAJOR_ROLE, item["major"])
-            group.setData(GROUP_MINOR_ROLE, item["minor"])
-            unit = UnitComboBox(item["unit"] or "식")
-            unit.value_committed.connect(lambda value, item_id=item["id"]: self._update_field(item_id, "unit", value))
-            self.table.setCellWidget(r, 6, unit)
+            for group_column in (1, 2):
+                group = self.table.item(r, group_column)
+                group.setData(GROUP_MAJOR_ROLE, item["major"])
+                group.setData(GROUP_MINOR_ROLE, item["minor"])
+            unit = QTableWidgetItem(item["unit"] or "식"); unit.setData(Qt.ItemDataRole.UserRole, item["id"])
+            unit.setFlags(unit.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(r, 6, unit)
             price = QTableWidgetItem("" if item["base_unit_price"] is None else f"{item['base_unit_price']:,}")
             price.setData(Qt.ItemDataRole.UserRole, item["id"])
             self.table.setItem(r, 7, price)
-            vat = QComboBox()
-            vat.addItem("10%", "TAXABLE")
-            vat.addItem("면세", "EXEMPT")
-            vat.setCurrentIndex(max(0, vat.findData(item["default_vat_type"])))
-            vat.currentIndexChanged.connect(lambda _=0, item_id=item["id"], widget=vat: self._update_field(item_id, "default_vat_type", widget.currentData()))
-            self.table.setCellWidget(r, 8, vat)
-            self.table.setCellWidget(r, 9, self._choice_combo(vendors, item["default_vendor_id"], item["id"], "default_vendor_id"))
-            self.table.setCellWidget(r, 10, self._choice_combo(people, item["default_assignee_id"], item["id"], "default_assignee_id"))
-            anchor = QComboBox()
-            anchor.addItem("행사일 기준", "START")
-            anchor.addItem("행사 종료 기준", "END")
-            anchor.setCurrentIndex(max(0, anchor.findData(item["anchor"])))
-            anchor.currentIndexChanged.connect(
-                lambda _=0, item_id=item["id"], widget=anchor: self._update_field(item_id, "anchor", widget.currentData())
-            )
-            self.table.setCellWidget(r, 11, anchor)
+            for c, text, data in [
+                (8, "10%" if item["default_vat_type"] == "TAXABLE" else "면세", item["default_vat_type"]),
+                (9, item["default_vendor_name"] or "미지정", item["default_vendor_id"]),
+                (10, item["default_assignee_name"] or "미지정", item["default_assignee_id"]),
+                (11, "행사일 기준" if item["anchor"] == "START" else "행사 종료 기준", item["anchor"]),
+            ]:
+                cell = QTableWidgetItem(text); cell.setData(Qt.ItemDataRole.UserRole, item["id"])
+                cell.setData(int(Qt.ItemDataRole.UserRole) + 1, data); cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, c, cell)
             for c, value in [(12, f"D{item['start_offset']:+d}"), (13, f"D{item['due_offset']:+d}")]:
                 cell = QTableWidgetItem(value)
                 cell.setData(Qt.ItemDataRole.UserRole, item["id"])
                 cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(r, c, cell)
-            priority = QComboBox()
-            priority.addItems(["상", "중", "하"])
-            priority.setCurrentText(item["priority"])
-            priority.currentTextChanged.connect(
-                lambda value, item_id=item["id"]: self._update_field(item_id, "priority", value)
-            )
-            self.table.setCellWidget(r, 14, priority)
             self.table.setRowHeight(r, 48)
+        self.table.apply_category_spans(1, 2)
         self.count.setText(f"{len(rows)}개 항목")
         self.table.blockSignals(False)
         self.loading = False
+        self.table.setUpdatesEnabled(True)
+        self.table.viewport().update()
 
-    def _choice_combo(self, rows, current, item_id: int, field: str):
-        combo = QComboBox()
-        combo.addItem("미지정", None)
-        for row in rows:
-            combo.addItem(row["name"], row["id"])
-        index = combo.findData(current)
-        combo.setCurrentIndex(index if index >= 0 else 0)
-        combo.currentIndexChanged.connect(
-            lambda _=0, iid=item_id, f=field, widget=combo: self._update_field(iid, f, widget.currentData())
-        )
-        return combo
+    def _open_cell_editor(self, row: int, column: int) -> None:
+        if column not in {6, 8, 9, 10, 11}:
+            return
+        cell = self.table.item(row, column)
+        if cell is None:
+            return
+        item_id = int(cell.data(Qt.ItemDataRole.UserRole))
+        current = cell.data(int(Qt.ItemDataRole.UserRole) + 1) if column != 6 else cell.text()
+        specs = {
+            6: ([(unit, unit) for unit in load_master_choice_catalog(self.db).units], "unit", True),
+            8: ([("10%", "TAXABLE"), ("면세", "EXEMPT")], "default_vat_type", False),
+            9: ([("미지정", None)] + [(x["name"], x["id"]) for x in self._vendors], "default_vendor_id", False),
+            10: ([("미지정", None)] + [(x["name"], x["id"]) for x in self._people], "default_assignee_id", False),
+            11: ([("행사일 기준", "START"), ("행사 종료 기준", "END")], "anchor", False),
+        }
+        choices, field, editable = specs[column]
+
+        def commit(value):
+            self._update_field(item_id, field, value)
+            label = value if editable else next((text for text, data in choices if data == value), "미지정")
+            cell.setText(str(label)); cell.setData(int(Qt.ItemDataRole.UserRole) + 1, value)
+
+        self.table.open_choice_editor(row, column, choices, current, commit, editable=editable)
 
     def _update_field(self, item_id: int, field: str, value) -> None:
         if self.loading:
             return
-        allowed = {"default_vendor_id", "default_assignee_id", "default_vat_type", "anchor", "priority", "unit"}
+        allowed = {"default_vendor_id", "default_assignee_id", "default_vat_type", "anchor", "unit"}
         if field not in allowed:
             return
         self.db.execute(f"UPDATE master_items SET {field}=? WHERE id=?", (value, item_id))
 
     def _cell_changed(self, row: int, column: int) -> None:
-        if self.loading or column not in {1, 2, 3, 4, 5, 7, 12, 13}:
+        if self.loading:
             return
         cell = self.table.item(row, column)
         if cell is None:
+            return
+        if column == 0:
+            return
+        if column not in {1, 2, 3, 4, 5, 7, 12, 13}:
             return
         item_id = cell.data(Qt.ItemDataRole.UserRole)
         fields = {1: "major", 2: "minor", 3: "name", 4: "detail", 5: "quantity", 7: "base_unit_price", 12: "start_offset", 13: "due_offset"}
@@ -208,6 +216,22 @@ class MasterPage(QWidget):
                 due = value if field == "due_offset" else current["due_offset"]
                 if start > due:
                     raise ValueError("작업 시작일은 마감일보다 늦을 수 없습니다.")
+            if field == "major":
+                old_major = str(cell.data(GROUP_MAJOR_ROLE) or "")
+                if value != old_major:
+                    self.db.execute("UPDATE master_items SET major=? WHERE major=?", (value, old_major))
+                self.refresh()
+                return
+            if field == "minor":
+                old_major = str(cell.data(GROUP_MAJOR_ROLE) or "")
+                old_minor = str(cell.data(GROUP_MINOR_ROLE) or "")
+                if value != old_minor:
+                    self.db.execute(
+                        "UPDATE master_items SET minor=? WHERE major=? AND minor=?",
+                        (value, old_major, old_minor),
+                    )
+                self.refresh()
+                return
             self.db.execute(f"UPDATE master_items SET {field}=? WHERE id=?", (value, item_id))
         except (ValueError, TypeError) as exc:
             QMessageBox.warning(self, "입력 확인", str(exc) if str(exc) else "올바른 값을 입력하세요.")
@@ -220,12 +244,15 @@ class MasterPage(QWidget):
         item_id = self.table.item(row, 3).data(Qt.ItemDataRole.UserRole)
         item = self.db.one("SELECT * FROM master_items WHERE id=?", (item_id,))
         people, vendors = self._contacts()
-        dialog = MasterItemDialog(item, people=people, vendors=vendors, parent=self)
+        dialog = MasterItemDialog(
+            item, people=people, vendors=vendors, parent=self,
+            category_choices=load_master_choice_catalog(self.db),
+        )
         if dialog.exec():
             values = dialog.values()
             self.db.execute(
                 """UPDATE master_items SET major=?,minor=?,name=?,detail=?,quantity=?,unit=?,
-                   base_unit_price=?,default_vat_type=?,default_vendor_id=?,default_assignee_id=?,anchor=?,start_offset=?,due_offset=?,priority=?
+                   base_unit_price=?,default_vat_type=?,default_vendor_id=?,default_assignee_id=?,anchor=?,start_offset=?,due_offset=?
                    WHERE id=?""",
                 (*values.values(), item_id),
             )
@@ -238,7 +265,10 @@ class MasterPage(QWidget):
 
     def add_item(self):
         people, vendors = self._contacts()
-        dialog = MasterItemDialog(people=people, vendors=vendors, parent=self)
+        dialog = MasterItemDialog(
+            people=people, vendors=vendors, parent=self,
+            category_choices=load_master_choice_catalog(self.db),
+        )
         if not dialog.exec():
             return
         values = dialog.values()
@@ -246,8 +276,8 @@ class MasterPage(QWidget):
         self.db.execute(
             """INSERT INTO master_items(
                id,major,minor,name,detail,quantity,unit,base_unit_price,default_vat_type,
-               default_vendor_id,default_assignee_id,anchor,start_offset,due_offset,priority,sort_order,active
-               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+               default_vendor_id,default_assignee_id,anchor,start_offset,due_offset,sort_order,active
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
             (next_values["next_id"], *values.values(), next_values["next_order"]),
         )
         self.refresh()

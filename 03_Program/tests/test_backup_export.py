@@ -4,7 +4,7 @@ from datetime import date
 
 from openpyxl import load_workbook
 
-from event_checklist.backup import create_backup, restore_backup
+from event_checklist.backup import create_backup, create_manual_backup, create_rotating_auto_backup, restore_backup
 from event_checklist.export import export_csv, export_excel
 from event_checklist.services import EventService
 
@@ -38,3 +38,13 @@ def test_excel_and_csv_export(db, tmp_path):
     assert workbook["정산 요약"].max_row >= 2
     workbook.close()
     assert "내보내기 행사" in csv_file.read_text(encoding="utf-8-sig")
+
+
+def test_auto_backup_rotation_keeps_ten_and_preserves_manual(db, tmp_path):
+    backup_directory = tmp_path / "backups"
+    manual = create_manual_backup(db, backup_directory)
+    for index in range(12):
+        db.execute("UPDATE contacts SET phone=? WHERE id=1", (str(index),))
+        create_rotating_auto_backup(db, backup_directory, keep=10)
+    assert manual.exists()
+    assert len(list(backup_directory.glob("auto_event_flow_*.db"))) == 10

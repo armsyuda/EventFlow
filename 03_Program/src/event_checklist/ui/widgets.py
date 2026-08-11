@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-from PySide6.QtCore import QDate, QEvent, QLocale, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import QDate, QEvent, QLocale, QRect, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QCalendarWidget, QComboBox, QDateEdit,
-    QDoubleSpinBox, QFrame, QHeaderView, QLabel, QStyledItemDelegate,
-    QStyleOptionViewItem, QTableWidget, QVBoxLayout,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QCalendarWidget, QComboBox, QDateEdit,
+    QDoubleSpinBox, QFrame, QHeaderView, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPushButton,
+    QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTableWidget, QVBoxLayout, QWidget,
 )
 
 from ..theme import TOKENS
@@ -19,7 +19,423 @@ GROUP_MAJOR_ROLE = int(Qt.ItemDataRole.UserRole) + 101
 GROUP_MINOR_ROLE = int(Qt.ItemDataRole.UserRole) + 102
 
 
-class GroupSeparatorDelegate(QStyledItemDelegate):
+class AppComboBox(QComboBox):
+    """Shared combo box with a clipped, consistently styled popup."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._popup_open = False
+
+    def showPopup(self) -> None:
+        self._popup_open = True
+        self._polish_popup()
+        try:
+            super().showPopup()
+        except Exception:
+            self._popup_open = False
+            raise
+        QTimer.singleShot(0, self._polish_popup)
+
+    def hidePopup(self) -> None:
+        super().hidePopup()
+        self._popup_open = False
+
+    def popup_is_open(self) -> bool:
+        return self._popup_open
+
+    def _polish_popup(self) -> None:
+        view = self.view()
+        container = self.view().window()
+        longest_label = max(
+            (view.fontMetrics().horizontalAdvance(self.itemText(index)) for index in range(self.count())),
+            default=0,
+        )
+        # Narrow spreadsheet columns must not force two-character units such
+        # as "세트" into an ellipsis.  Keep enough room for text, padding and
+        # the slim vertical scrollbar while avoiding an excessively wide menu.
+        popup_width = min(360, max(112, self.width(), longest_label + 48))
+        view.setMinimumWidth(popup_width)
+        view.setTextElideMode(Qt.TextElideMode.ElideNone)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        container.setAutoFillBackground(False)
+        # A bare ``background: transparent`` on the popup container cascades
+        # into its list view on Windows and turns the whole menu black.  Scope
+        # transparency to the outer native container and give the actual list
+        # its own opaque SEED surface.
+        container.setStyleSheet(
+            "QComboBoxPrivateContainer { background: transparent; border: none; padding: 0; }"
+        )
+        view.setAutoFillBackground(True)
+        view.viewport().setAutoFillBackground(True)
+        view.setStyleSheet(f"""
+            QAbstractItemView {{
+                background-color: {TOKENS['bg_layer']};
+                color: {TOKENS['fg_neutral']};
+                border: 1px solid {TOKENS['stroke']};
+                border-radius: 9px;
+                padding: 5px;
+                outline: none;
+                selection-background-color: {TOKENS['brand_weak']};
+                selection-color: {TOKENS['brand_pressed']};
+            }}
+            QAbstractItemView::item {{
+                min-height: 34px;
+                padding: 0 9px;
+                border-radius: 6px;
+                background-color: {TOKENS['bg_layer']};
+                color: {TOKENS['fg_neutral']};
+            }}
+            QAbstractItemView::item:selected {{
+                background-color: {TOKENS['brand_weak']};
+                color: {TOKENS['brand_pressed']};
+            }}
+            QScrollBar:vertical {{
+                width: 5px;
+                margin: 3px 0;
+                border: none;
+                background: transparent;
+            }}
+            QScrollBar::handle:vertical {{
+                min-height: 24px;
+                border: none;
+                border-radius: 2px;
+                background: #C9CDD3;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: #AEB3BA; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                width: 0;
+                height: 0;
+                border: none;
+                background: transparent;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
+        """)
+        if container.width() > 0 and container.height() > 0:
+            path = QPainterPath()
+            path.addRoundedRect(container.rect(), 9, 9)
+            container.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+
+class AddableChoiceField(QWidget):
+    """Shared existing-choice picker with an explicit add-new action."""
+
+    value_added = Signal(str)
+
+    def __init__(self, choices=(), value: str = "", *, add_label: str = "+ 새로 추가",
+                 dialog_title: str = "새 값 추가", prompt: str = "새 이름", parent=None):
+        super().__init__(parent)
+        self.dialog_title = dialog_title
+        self.prompt = prompt
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.combo = AppComboBox()
+        # New values are entered through the explicit add button.  Keeping the
+        # picker non-editable makes a click anywhere on the field open the
+        # existing-value popup instead of merely placing a text cursor.
+        self.combo.setEditable(False)
+        self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.addItems(choices)
+        if value:
+            self.setCurrentText(value)
+        self.open_button = QPushButton("▾")
+        self.open_button.setObjectName("ChoiceOpenButton")
+        self.open_button.setFixedWidth(42)
+        self.open_button.setToolTip("기존 목록 보기")
+        self.open_button.clicked.connect(self.combo.showPopup)
+        self.add_button = QPushButton(add_label)
+        self.add_button.setProperty("secondary", True)
+        self.add_button.setMinimumWidth(112)
+        self.add_button.clicked.connect(self._request_value)
+        layout.addWidget(self.combo, 1)
+        layout.addWidget(self.open_button)
+        layout.addWidget(self.add_button)
+
+    def _request_value(self):
+        value, accepted = QInputDialog.getText(self, self.dialog_title, self.prompt)
+        if accepted:
+            self.add_value(value)
+
+    def add_value(self, value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        index = self.findText(text)
+        if index < 0:
+            self.combo.addItem(text)
+            index = self.combo.count() - 1
+        self.combo.setCurrentIndex(index)
+        self.value_added.emit(text)
+        return True
+
+    def addItems(self, choices) -> None:
+        for value in choices:
+            text = str(value or "").strip()
+            if text and self.findText(text) < 0:
+                self.combo.addItem(text)
+
+    def clear(self) -> None:
+        self.combo.clear()
+
+    def currentText(self) -> str:
+        return self.combo.currentText()
+
+    def setCurrentText(self, value: str) -> None:
+        text = str(value or "").strip()
+        if text and self.findText(text) < 0:
+            self.combo.addItem(text)
+        self.combo.setCurrentText(text)
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.combo.setCurrentIndex(index)
+
+    def findText(self, value: str) -> int:
+        return self.combo.findText(value)
+
+    def setToolTip(self, text: str) -> None:
+        super().setToolTip(text)
+        self.combo.setToolTip(text)
+        self.add_button.setToolTip(text)
+
+
+class FastEditableTable(QTableWidget):
+    """Spreadsheet table that creates only the editor for the active cell."""
+
+    def __init__(self, rows: int, columns: int, parent=None):
+        super().__init__(rows, columns, parent)
+        self._active_editor = None
+        self._active_cell = None
+        self._group_spans: list[tuple[int, int]] = []
+        self._money_columns: set[int] = set()
+        self._fixed_column_widths: dict[int, int] = {}
+
+    def set_fixed_columns(self, columns: dict[int, int]) -> None:
+        self._fixed_column_widths = {int(column): int(width) for column, width in columns.items()}
+        header = self.horizontalHeader()
+        for column, width in self._fixed_column_widths.items():
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.setColumnWidth(column, width)
+
+    def fixed_column_widths(self) -> dict[int, int]:
+        return dict(self._fixed_column_widths)
+
+    def set_money_columns(self, columns) -> None:
+        self._money_columns = {int(column) for column in columns}
+        for row in range(self.rowCount()):
+            for column in range(self.columnCount()):
+                item = self.item(row, column)
+                if item is not None:
+                    self._apply_item_alignment(item, column)
+
+    def _apply_item_alignment(self, item, column: int) -> None:
+        horizontal = Qt.AlignmentFlag.AlignRight if column in self._money_columns else Qt.AlignmentFlag.AlignHCenter
+        item.setTextAlignment(horizontal | Qt.AlignmentFlag.AlignVCenter)
+
+    def setItem(self, row: int, column: int, item) -> None:
+        if item is not None:
+            self._apply_item_alignment(item, column)
+        super().setItem(row, column, item)
+
+    def reset_spans(self) -> None:
+        """Remove category and summary spans before rebuilding table rows."""
+        self.clearSpans()
+        self._group_spans.clear()
+
+    def apply_category_spans(self, major_column: int, minor_column: int | None = None) -> None:
+        """Merge adjacent equal category cells with one shared hierarchy rule."""
+        for row, column in self._group_spans:
+            if row < self.rowCount() and column < self.columnCount():
+                self.setSpan(row, column, 1, 1)
+        self._group_spans.clear()
+
+        def category(row: int) -> tuple[str, str] | None:
+            major_item = self.item(row, major_column)
+            if major_item is None:
+                return None
+            major = major_item.data(GROUP_MAJOR_ROLE)
+            minor = major_item.data(GROUP_MINOR_ROLE)
+            if major is None:
+                return None
+            return str(major), str(minor or "")
+
+        def merge_runs(column: int, key_for_row) -> None:
+            start = 0
+            while start < self.rowCount():
+                key = key_for_row(start)
+                if key is None:
+                    start += 1
+                    continue
+                end = start + 1
+                while end < self.rowCount() and key_for_row(end) == key:
+                    end += 1
+                count = end - start
+                if count > 1:
+                    self.setSpan(start, column, count, 1)
+                    item = self.item(start, column)
+                    if item is not None:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self._group_spans.append((start, column))
+                start = end
+
+        merge_runs(major_column, lambda row: (category(row) or (None, None))[0])
+        if minor_column is not None:
+            merge_runs(minor_column, category)
+
+    def open_cell_editor(self, row: int, column: int, editor) -> None:
+        self.close_cell_editor()
+        self._active_editor = editor
+        self._active_cell = (row, column)
+        self.setCellWidget(row, column, editor)
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def close_cell_editor(self) -> None:
+        if self._active_editor is None or self._active_cell is None:
+            return
+        editor = self._active_editor
+        row, column = self._active_cell
+        self._active_editor = None
+        self._active_cell = None
+        if isinstance(editor, QComboBox):
+            editor.hidePopup()
+        for calendar in editor.findChildren(QCalendarWidget):
+            calendar.hide()
+        editor.blockSignals(True)
+        self.removeCellWidget(row, column)
+        self.viewport().update()
+
+    def open_choice_editor(self, row: int, column: int, choices, current, commit, *, editable=False) -> None:
+        editor = AppComboBox()
+        editor.setEditable(editable)
+        for label, value in choices:
+            editor.addItem(str(label), value)
+            editor.setItemData(editor.count() - 1, Qt.AlignmentFlag.AlignCenter, Qt.ItemDataRole.TextAlignmentRole)
+        if editor.isEditable():
+            editor.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        index = editor.findData(current)
+        if index >= 0:
+            editor.setCurrentIndex(index)
+        elif editable:
+            editor.setCurrentText(str(current or ""))
+
+        finished = False
+
+        def apply_choice(*_args):
+            nonlocal finished
+            if finished:
+                return
+            value = editor.currentText().strip() if editable else editor.currentData()
+            if commit(value) is False:
+                return
+            finished = True
+            # Do not destroy the editor from inside the native popup's
+            # activated event.  Let Qt finish closing the popup first.
+            QTimer.singleShot(0, self.close_cell_editor)
+
+        editor.activated.connect(apply_choice)
+        if editable:
+            # Opening an editable combo popup temporarily moves focus away
+            # from its line edit on Windows.  That emits editingFinished even
+            # though the user has not selected or entered anything yet.
+            editor.lineEdit().editingFinished.connect(
+                lambda: None if editor.popup_is_open() else apply_choice()
+            )
+        self.open_cell_editor(row, column, editor)
+        # Offscreen test platforms cannot safely own native popup windows after
+        # the transient cell editor is removed.  The real Windows application
+        # still opens the choices immediately with the first cell click.
+        if QApplication.platformName() != "offscreen":
+            QTimer.singleShot(0, editor.showPopup)
+
+    def open_number_editor(self, row: int, column: int, value, commit, *, money=False) -> None:
+        editor = QDoubleSpinBox()
+        editor.setRange(0, 999_999_999_999)
+        configure_money_spin(editor) if money else configure_quantity_spin(editor)
+        editor.setValue(float(value or 0))
+
+        def apply_value():
+            result = int(editor.value()) or None
+            if commit(result) is False:
+                return
+            self.close_cell_editor()
+
+        editor.editingFinished.connect(apply_value)
+        self.open_cell_editor(row, column, editor)
+        editor.selectAll()
+
+    def open_date_editor(self, row: int, column: int, value: str, commit) -> None:
+        editor = DirectDateEdit()
+        editor.setDate(QDate.fromString(value, "yyyy-MM-dd"))
+
+        def apply_date(selected: QDate):
+            text = selected.toString("yyyy-MM-dd")
+            if commit(text) is False:
+                return
+            QTimer.singleShot(0, self.close_cell_editor)
+
+        editor.dateChanged.connect(apply_date)
+        self.open_cell_editor(row, column, editor)
+        QTimer.singleShot(0, editor._open_calendar)
+
+    def open_text_editor(self, row: int, column: int, value: str, commit) -> None:
+        editor = QLineEdit(value or "")
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        def apply_text():
+            if commit(editor.text().strip()) is False:
+                return
+            self.close_cell_editor()
+
+        editor.editingFinished.connect(apply_text)
+        self.open_cell_editor(row, column, editor)
+        editor.selectAll()
+
+
+class SpreadsheetItemDelegate(QStyledItemDelegate):
+    """Shared spreadsheet painter with truly centered item checkboxes."""
+
+    @staticmethod
+    def check_indicator_rect(option: QStyleOptionViewItem, style) -> QRect:
+        probe = QStyleOptionViewItem(option)
+        indicator = style.subElementRect(QStyle.SubElement.SE_ItemViewItemCheckIndicator, probe, option.widget)
+        indicator.moveCenter(option.rect.center())
+        return indicator
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        check_state = index.data(Qt.ItemDataRole.CheckStateRole)
+        if check_state is None:
+            super().paint(painter, option, index)
+            return
+
+        style = option.widget.style() if option.widget is not None else QApplication.style()
+        body = QStyleOptionViewItem(option)
+        self.initStyleOption(body, index)
+        body.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, body, painter, option.widget)
+
+        indicator = QStyleOptionViewItem(option)
+        indicator.rect = self.check_indicator_rect(option, style)
+        indicator.state &= ~(
+            QStyle.StateFlag.State_On | QStyle.StateFlag.State_Off | QStyle.StateFlag.State_NoChange
+        )
+        if check_state == Qt.CheckState.Checked:
+            indicator.state |= QStyle.StateFlag.State_On
+        elif check_state == Qt.CheckState.PartiallyChecked:
+            indicator.state |= QStyle.StateFlag.State_NoChange
+        else:
+            indicator.state |= QStyle.StateFlag.State_Off
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck,
+            indicator,
+            painter,
+            option.widget,
+        )
+
+
+class GroupSeparatorDelegate(SpreadsheetItemDelegate):
     """대분류·중분류가 바뀌는 행의 위쪽 경계를 단계별로 강조한다."""
 
     def __init__(self, anchor_column: int = 1, parent=None):
@@ -69,6 +485,7 @@ class DirectDateEdit(QDateEdit):
         super().__init__(parent)
         self.setProperty("directCalendar", True)
         self.setDisplayFormat("yyyy-MM-dd")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setCursor(Qt.CursorShape.PointingHandCursor)
@@ -141,19 +558,24 @@ def configure_quantity_spin(widget: QDoubleSpinBox) -> QDoubleSpinBox:
     widget.setDecimals(0)
     widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
     widget.setGroupSeparatorShown(True)
-    widget.setAlignment(Qt.AlignmentFlag.AlignRight)
+    widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
     widget.setProperty("quantityInput", True)
     return widget
 
 
-class UnitComboBox(QComboBox):
+class UnitComboBox(AppComboBox):
     value_committed = Signal(str)
 
-    def __init__(self, value: str = "", parent=None):
+    def __init__(self, value: str = "", parent=None, choices=None):
         super().__init__(parent)
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.addItems(COMMON_UNITS)
+        values = []
+        for unit in choices or COMMON_UNITS:
+            text = str(unit or "").strip()
+            if text and text not in values:
+                values.append(text)
+        self.addItems(values)
         self.setCurrentText(value or "식")
         self._last_value = self.currentText().strip()
         self.activated.connect(self._commit)
@@ -210,13 +632,11 @@ class PeriodCalendar(QCalendarWidget):
     def periods_for_day(self, day: date) -> list[dict]:
         """완료되지 않았고 마감이 가까운 업무부터 달력 라벨 순서를 정한다."""
         unique = {int(period["id"]): period for period in self._dates.get(day, [])}
-        priority_order = {"상": 0, "중": 1, "하": 2}
         return sorted(
             unique.values(),
             key=lambda period: (
                 period["status"] == "완료",
                 period["due_date"],
-                priority_order.get(period.get("priority"), 3),
                 int(period.get("sort_order") or 0),
                 int(period["id"]),
             ),
@@ -301,7 +721,7 @@ class PeriodCalendar(QCalendarWidget):
         painter.restore()
 
 
-def configure_resizable_table(table: QTableWidget, widths: list[int]) -> None:
+def configure_data_table(table: QTableWidget, widths: list[int], *, alternating: bool = True) -> None:
     """모든 열을 직접 늘이거나 이동할 수 있게 하고 초기 너비만 지정한다."""
     header = table.horizontalHeader()
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -310,8 +730,17 @@ def configure_resizable_table(table: QTableWidget, widths: list[int]) -> None:
     header.setStretchLastSection(False)
     table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
     table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setAlternatingRowColors(alternating)
+    table.setItemDelegate(SpreadsheetItemDelegate(table))
+    table.verticalHeader().setDefaultSectionSize(48)
+    table.verticalHeader().setMinimumSectionSize(48)
     for column, width in enumerate(widths):
         table.setColumnWidth(column, width)
+
+
+def configure_resizable_table(table: QTableWidget, widths: list[int]) -> None:
+    """Backward-compatible alias for the shared table configuration."""
+    configure_data_table(table, widths)
 
 
 def configure_editable_table(
@@ -322,11 +751,8 @@ def configure_editable_table(
     anchor_column: int = 1,
 ) -> None:
     """Shared presentation contract for spreadsheet-like editable tables."""
-    configure_resizable_table(table, widths)
+    configure_data_table(table, widths)
     table.setProperty("embeddedEditors", True)
-    table.verticalHeader().setDefaultSectionSize(48)
-    table.verticalHeader().setMinimumSectionSize(48)
-    table.setAlternatingRowColors(True)
     if grouped:
         table.setItemDelegate(GroupSeparatorDelegate(anchor_column, table))
 
@@ -336,8 +762,13 @@ def fit_table_to_view(table: QTableWidget, minimum: int = 58) -> None:
     visible = [column for column in range(table.columnCount()) if not table.isColumnHidden(column)]
     if not visible:
         return
-    available = max(1, table.viewport().width() - 4)
-    current = [max(minimum, table.columnWidth(column)) for column in visible]
+    fixed = table.fixed_column_widths() if isinstance(table, FastEditableTable) else {}
+    flexible = [column for column in visible if column not in fixed]
+    if not flexible:
+        return
+    fixed_width = sum(table.columnWidth(column) for column in visible if column in fixed)
+    available = max(1, table.viewport().width() - fixed_width - 4)
+    current = [max(minimum, table.columnWidth(column)) for column in flexible]
     total = sum(current)
     if total <= 0:
         return
@@ -345,5 +776,5 @@ def fit_table_to_view(table: QTableWidget, minimum: int = 58) -> None:
     # 반올림 오차는 마지막 열에 반영하되 최소 너비를 지킨다.
     if sum(widths) < available:
         widths[-1] += available - sum(widths)
-    for column, width in zip(visible, widths):
+    for column, width in zip(flexible, widths):
         table.setColumnWidth(column, width)

@@ -21,7 +21,6 @@ for index, task in enumerate(tasks[:6]):
         planned_start=(today - timedelta(days=2)).isoformat(),
         due_date=(today + timedelta(days=index - 2)).isoformat(),
         status="진행중" if index % 2 else "미착수",
-        priority="상" if index < 3 else "중",
     )
 service.update_task(
     tasks[6]["id"],

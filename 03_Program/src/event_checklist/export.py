@@ -9,12 +9,12 @@ from openpyxl.utils import get_column_letter
 
 from .services import EventService
 
-HEADERS = ["행사", "대분류", "중분류", "항목", "확인 포인트", "상태", "우선순위", "수량", "단위",
+HEADERS = ["행사", "대분류", "중분류", "항목", "확인 포인트", "상태", "수량", "단위",
            "담당", "업체", "작업 시작일", "마감일", "일정 방식", "행사 단가", "VAT 구분", "메모"]
 
 
 def _task_rows(db, event_id=None):
-    sql = """SELECT e.name event_name,t.major,t.minor,t.name,t.detail,t.status,t.priority,t.quantity,t.unit,
+    sql = """SELECT e.name event_name,t.major,t.minor,t.name,t.detail,t.status,t.quantity,t.unit,
              p.name assignee,v.name vendor,t.planned_start,t.due_date,t.schedule_mode,t.unit_price,t.vat_type,t.note
              FROM event_tasks t JOIN events e ON e.id=t.event_id
              LEFT JOIN contacts p ON p.id=t.assignee_id LEFT JOIN contacts v ON v.id=t.vendor_id WHERE t.is_removed=0"""
@@ -44,7 +44,7 @@ def export_excel(db, destination: Path, event_id=None):
     destination = Path(destination); destination.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook(); ws = wb.active; ws.title = "체크리스트"; ws.append(HEADERS)
     for row in _task_rows(db, event_id): ws.append(list(row))
-    _style_sheet(ws, [24,10,14,22,36,12,10,10,10,16,18,14,14,12,14,12,36])
+    _style_sheet(ws, [24,10,14,22,36,12,10,10,16,18,14,14,12,14,12,36])
 
     service = EventService(db)
     events = service.list_events() if event_id is None else [service.get_event(event_id)]

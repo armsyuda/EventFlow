@@ -2,28 +2,32 @@ from __future__ import annotations
 
 import os
 from datetime import date, timedelta
+from time import perf_counter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QCalendarWidget, QComboBox, QPushButton
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtWidgets import QApplication, QCalendarWidget, QLineEdit, QListWidget, QMessageBox, QPushButton, QStyleOptionViewItem
 from PySide6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox
 from PySide6.QtTest import QTest
 
 from event_checklist.database import Database
+from event_checklist.choices import load_master_choice_catalog
 from event_checklist.services import EventService
 from event_checklist.ui.calendar_page import CalendarPage, CalendarTaskCard
+from event_checklist.ui.contacts_page import ContactsPage
 from event_checklist.ui.dashboard_page import EventCard
-from event_checklist.ui.dialogs import EventDialog
+from event_checklist.ui.dialogs import EventDialog, MasterItemDialog
 from event_checklist.ui.main_window import MainWindow
-from event_checklist.ui.events_page import EventsPage
+from event_checklist.ui.events_page import EventsPage, STATUSES
 from event_checklist.ui.master_page import MasterPage
 from event_checklist.ui.month_timeline import MonthTimeline
 from event_checklist.ui.settlement_page import SettlementPage
-from event_checklist.theme import ComboPopupPolisher, application_stylesheet
+from event_checklist.ui.startup_splash import StartupSplash
+from event_checklist.theme import ComboPopupPolisher, InteractionCursorPolisher, application_stylesheet
 from event_checklist.ui.widgets import (
-    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, DirectDateEdit, UnitComboBox,
-    configure_money_spin, configure_quantity_spin,
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, AppComboBox, DirectDateEdit, FastEditableTable, UnitComboBox,
+    SpreadsheetItemDelegate, configure_money_spin, configure_quantity_spin, fit_table_to_view,
 )
 from event_checklist.units import COMMON_UNITS
 from event_checklist.update_service import UpdateInfo
@@ -44,7 +48,7 @@ def test_title_bar_shows_current_public_version_and_release_date(tmp_path):
     db = Database(tmp_path / "update-meta.db"); window = MainWindow(db, enable_update_check=False)
     info = UpdateInfo("0.3.3", "v0.3.3", "", "", None, "", "", "2026-08-11T00:41:19Z")
     window._update_check_finished(info)
-    assert "현재 0.3.11" in window.title_bar.update_meta.text()
+    assert "현재 0.3.23" in window.title_bar.update_meta.text()
     assert "공개 0.3.3" in window.title_bar.update_meta.text()
     assert "2026-08-11" in window.title_bar.update_meta.text()
     assert window.title_bar.update_button.text() == "다시 확인"
@@ -72,11 +76,11 @@ def test_master_item_cell_can_be_edited_directly(tmp_path):
 def test_calendar_lanes_prioritize_nearest_incomplete_deadlines():
     app = QApplication.instance() or QApplication([]); timeline = MonthTimeline(); timeline.set_month(2026, 9)
     rows = [
-        {"id":1,"name":"먼 마감","major":"운영","priority":"중","sort_order":1,"planned_start":"2026-09-01","due_date":"2026-09-20","status":"미착수"},
-        {"id":2,"name":"가까운 마감","major":"행사","priority":"중","sort_order":2,"planned_start":"2026-09-01","due_date":"2026-09-05","status":"미착수"},
-        {"id":3,"name":"완료 업무","major":"시설","priority":"상","sort_order":3,"planned_start":"2026-09-01","due_date":"2026-09-03","status":"완료"},
-        {"id":4,"name":"첫 번째","major":"홍보","priority":"상","sort_order":4,"planned_start":"2026-09-01","due_date":"2026-09-06","status":"미착수"},
-        {"id":5,"name":"두 번째","major":"시스템","priority":"상","sort_order":5,"planned_start":"2026-09-01","due_date":"2026-09-07","status":"미착수"},
+        {"id":1,"name":"먼 마감","major":"운영","sort_order":1,"planned_start":"2026-09-01","due_date":"2026-09-20","status":"미착수"},
+        {"id":2,"name":"가까운 마감","major":"행사","sort_order":2,"planned_start":"2026-09-01","due_date":"2026-09-05","status":"미착수"},
+        {"id":3,"name":"완료 업무","major":"시설","sort_order":3,"planned_start":"2026-09-01","due_date":"2026-09-03","status":"완료"},
+        {"id":4,"name":"첫 번째","major":"홍보","sort_order":4,"planned_start":"2026-09-01","due_date":"2026-09-06","status":"미착수"},
+        {"id":5,"name":"두 번째","major":"시스템","sort_order":5,"planned_start":"2026-09-01","due_date":"2026-09-07","status":"미착수"},
     ]
     timeline.set_tasks(rows)
     week = next(week for week in timeline._calendar_weeks() if date(2026, 9, 2) in week)
@@ -125,6 +129,17 @@ def test_unit_combo_matches_excel_list_and_allows_custom_value():
     assert committed == ["롤"]
 
 
+def test_narrow_unit_popup_keeps_full_labels_and_uses_slim_scrollbar():
+    app = QApplication.instance() or QApplication([])
+    combo = AppComboBox(); combo.setEditable(True); combo.addItems(COMMON_UNITS); combo.resize(80, 44)
+    combo._polish_popup()
+    assert combo.view().minimumWidth() >= 112
+    assert combo.view().textElideMode() == Qt.TextElideMode.ElideNone
+    assert "width: 5px" in combo.view().styleSheet()
+    assert combo.view().minimumWidth() - 30 > combo.view().fontMetrics().horizontalAdvance("세트")
+    combo.close()
+
+
 def test_quantity_input_uses_whole_number_without_arrows():
     app = QApplication.instance() or QApplication([])
     quantity = configure_quantity_spin(QDoubleSpinBox())
@@ -132,13 +147,14 @@ def test_quantity_input_uses_whole_number_without_arrows():
     assert quantity.decimals() == 0
     assert quantity.text() == "12"
     assert quantity.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+    assert quantity.alignment() & Qt.AlignmentFlag.AlignHCenter
 
 
 def test_calendar_card_completion_and_quick_postpone_actions():
     app = QApplication.instance() or QApplication([])
     today = date.today()
     task = {
-        "id": 11, "name": "긴급 업무", "major": "운영", "priority": "상", "status": "진행중",
+        "id": 11, "name": "긴급 업무", "major": "운영", "status": "진행중",
         "planned_start": today.isoformat(), "due_date": today.isoformat(),
     }
     card = CalendarTaskCard(task)
@@ -156,7 +172,7 @@ def test_calendar_postpone_actions_only_appear_for_today_deadline():
     app = QApplication.instance() or QApplication([])
     future = date.today() + timedelta(days=1)
     task = {
-        "id": 12, "name": "내일 업무", "major": "운영", "priority": "중", "status": "미착수",
+        "id": 12, "name": "내일 업무", "major": "운영", "status": "미착수",
         "planned_start": date.today().isoformat(), "due_date": future.isoformat(),
     }
     card = CalendarTaskCard(task)
@@ -190,6 +206,176 @@ def test_checklist_prefetches_assignees_once_and_creates_calendars_lazily(tmp_pa
     page.close(); db.close()
 
 
+def test_merged_master_category_edit_renames_the_whole_group(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "master-group-edit.db"); page = MasterPage(db)
+    cell = page.table.item(0, 1)
+    old_major = cell.data(GROUP_MAJOR_ROLE)
+    group_count = db.one("SELECT COUNT(*) count FROM master_items WHERE major=?", (old_major,))["count"]
+    assert page.table.rowSpan(0, 1) > 1 and group_count > 1
+    cell.setText("통합 분류 수정")
+    assert db.one("SELECT COUNT(*) count FROM master_items WHERE major=?", (old_major,))["count"] == 0
+    assert db.one("SELECT COUNT(*) count FROM master_items WHERE major='통합 분류 수정'")["count"] == group_count
+    page.close(); db.close()
+
+
+def test_checklist_status_choice_updates_database_and_keeps_order_number(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "status-choice.db"); service = EventService(db)
+    ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("상태 변경", date.today(), date.today() + timedelta(days=2), ids)
+    page = EventsPage(service, db); page.set_event(event_id)
+    assert isinstance(page._current_tasks[0], dict)
+    task_id = int(page._current_tasks[0]["id"])
+    page._open_cell_editor(0, 4)
+    editor = page.table.cellWidget(0, 4)
+    target = STATUSES.index("완료")
+    editor.setCurrentIndex(target); editor.activated.emit(target); app.processEvents()
+    assert db.one("SELECT status FROM event_tasks WHERE id=?", (task_id,))["status"] == "완료"
+    assert page.table.item(0, 4).text() == "완료"
+    assert page.table.item(0, 0).text() == "1"
+    assert not (page.table.item(0, 0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    assert page.table.cellWidget(0, 4) is None
+    del editor
+    page.close(); db.close()
+
+
+def test_spreadsheet_checkbox_indicator_is_centered_in_its_cell():
+    app = QApplication.instance() or QApplication([])
+    table = FastEditableTable(1, 1); table.resize(100, 70); table.show(); app.processEvents()
+    option = QStyleOptionViewItem(); option.rect = QRect(0, 0, 80, 48); option.widget = table
+    indicator = SpreadsheetItemDelegate.check_indicator_rect(option, table.style())
+    assert abs(indicator.center().x() - option.rect.center().x()) <= 1
+    assert abs(indicator.center().y() - option.rect.center().y()) <= 1
+    table.close()
+
+
+def test_checklist_order_column_stays_fixed_when_columns_fit(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "fixed-order.db"); service = EventService(db)
+    ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("순서 열", date.today(), date.today() + timedelta(days=2), ids)
+    page = EventsPage(service, db); page.set_event(event_id); page.resize(1600, 800); page.show(); app.processEvents()
+    before = page.table.columnWidth(0)
+    fit_table_to_view(page.table)
+    assert before == 52 == page.table.columnWidth(0)
+    assert page.table.horizontalHeader().sectionResizeMode(0) == page.table.horizontalHeader().ResizeMode.Fixed
+    assert [page.table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
+    page.close(); db.close()
+
+
+def test_master_order_column_matches_checklist_fixed_component(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "master-order.db")
+    page = MasterPage(db); page.resize(1600, 800); page.show(); app.processEvents()
+    fit_table_to_view(page.table)
+    assert page.table.horizontalHeaderItem(0).text() == "순서"
+    assert page.table.columnWidth(0) == 52
+    assert page.table.horizontalHeader().sectionResizeMode(0) == page.table.horizontalHeader().ResizeMode.Fixed
+    assert [page.table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
+    assert not (page.table.item(0, 0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    page.close(); db.close()
+
+
+def test_import_master_explains_when_every_master_is_already_in_event(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "all-master-imported.db"); service = EventService(db)
+    ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("모두 포함", date.today(), date.today() + timedelta(days=2), ids)
+    page = EventsPage(service, db); page.set_event(event_id)
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, title, text: messages.append((title, text)))
+    page.import_master()
+    assert messages and "기본 항목 120개가 모두 포함" in messages[0][1]
+    page.close(); db.close()
+
+
+def test_checklist_excludes_immediately_and_restores_from_removed_view(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "exclude-restore.db"); service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
+    event_id = service.create_event("제외 복원", date.today(), None, [master["id"]])
+    page = EventsPage(service, db); page.set_event(event_id)
+    task_id = int(page._current_tasks[0]["id"])
+
+    page.table.selectRow(0)
+    page.remove_selected()
+    removed = db.one("SELECT is_removed,removed_reason FROM event_tasks WHERE id=?", (task_id,))
+    assert tuple(removed) == (1, "")
+    assert page.table.rowCount() == 0
+
+    page.removed_toggle.setChecked(True)
+    assert page.remove_button.text() == "선택 항목 복원"
+    assert page.table.rowCount() == 1
+    page.table.selectRow(0)
+    page.remove_selected()
+    assert db.one("SELECT is_removed FROM event_tasks WHERE id=?", (task_id,))["is_removed"] == 0
+    assert page.table.rowCount() == 0
+    page.close(); db.close()
+
+
+def test_master_item_dialog_uses_shared_dynamic_categories_and_units(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "dynamic-master-choices.db")
+    db.execute(
+        "UPDATE master_items SET major=?,minor=?,unit=? WHERE id=(SELECT MIN(id) FROM master_items)",
+        ("신규 대분류", "신규 중분류", "회차"),
+    )
+    catalog = load_master_choice_catalog(db)
+    assert "신규 대분류" in catalog.majors
+    assert catalog.minors_by_major["신규 대분류"] == ("신규 중분류",)
+    assert "회차" in catalog.units
+
+    dialog = MasterItemDialog(category_choices=catalog)
+    major_index = dialog.major.findText("신규 대분류")
+    dialog.major.setCurrentIndex(major_index)
+    dialog.major.combo.activated.emit(major_index)
+    assert dialog.minor.findText("신규 중분류") >= 0
+    assert dialog.unit.findText("회차") >= 0
+    assert dialog.major.add_button.text() == "+ 새 대분류"
+    assert dialog.minor.add_button.text() == "+ 새 중분류"
+    assert dialog.unit.add_button.text() == "+ 새 단위"
+    assert dialog.major.open_button.text() == "▾"
+    assert not dialog.major.combo.isEditable()
+    assert not dialog.minor.combo.isEditable()
+    assert not dialog.unit.combo.isEditable()
+    dialog.major.combo.showPopup()
+    assert dialog.major.combo.popup_is_open()
+    assert dialog.major.combo.view().model().rowCount() == len(catalog.majors)
+    dialog.major.combo.hidePopup()
+
+    dialog.major.add_value("직접 추가 대분류")
+    dialog.minor.add_value("직접 추가 중분류")
+    dialog.unit.add_value("직접 추가 단위")
+    dialog.name.setText("새 업무")
+    values = dialog.values()
+    assert values["major"] == "직접 추가 대분류"
+    assert values["minor"] == "직접 추가 중분류"
+    assert values["unit"] == "직접 추가 단위"
+    dialog.close(); db.close()
+
+
+def test_new_master_unit_is_available_in_all_spreadsheet_unit_editors(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "shared-unit-editors.db"); service = EventService(db)
+    db.execute(
+        "UPDATE master_items SET unit=? WHERE id=(SELECT MIN(id) FROM master_items)",
+        ("회차",),
+    )
+    ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("공통 단위", date.today(), date.today() + timedelta(days=2), ids)
+    master = MasterPage(db); settlement = SettlementPage(service, db); settlement.set_event(event_id)
+
+    master._open_cell_editor(0, 6)
+    assert master.table.cellWidget(0, 6).findText("회차") >= 0
+    master.table.close_cell_editor()
+    task_row = next(row for row in range(settlement.table.rowCount()) if settlement.table.item(row, 4).data(Qt.ItemDataRole.UserRole))
+    settlement._open_cell_editor(task_row, 4)
+    assert settlement.table.cellWidget(task_row, 4).findText("회차") >= 0
+    settlement.table.close_cell_editor()
+    master.close(); settlement.close(); db.close()
+
+
 def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries(tmp_path):
     app = QApplication.instance() or QApplication([])
     previous_style = app.styleSheet()
@@ -206,12 +392,16 @@ def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries
     checklist.set_event(event_id)
     app.processEvents()
 
-    for table, editor_column in ((checklist.table, 3), (master.table, 6)):
+    for table, editor_column in ((checklist.table, 4), (master.table, 6)):
         cell_rect = table.visualRect(table.model().index(0, editor_column))
-        editor_rect = table.cellWidget(0, editor_column).geometry()
         assert table.rowHeight(0) == 48
+        assert table.cellWidget(0, editor_column) is None
+        QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=cell_rect.center())
+        app.processEvents()
+        editor_rect = table.cellWidget(0, editor_column).geometry()
         assert editor_rect.top() >= cell_rect.top()
         assert editor_rect.bottom() <= cell_rect.bottom()
+        table.close_cell_editor()
 
         model = table.model()
         delegate = table.itemDelegate()
@@ -222,20 +412,57 @@ def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries
     anchor = checklist.table.item(0, 1)
     assert anchor.data(GROUP_MAJOR_ROLE)
     assert anchor.data(GROUP_MINOR_ROLE)
+    assert checklist.table.horizontalHeaderItem(1).text() == "대분류"
+    assert checklist.table.horizontalHeaderItem(2).text() == "중분류"
+    assert master.table.rowSpan(0, 1) > 1
+    assert master.table.rowSpan(0, 2) > 1
     checklist.close(); master.close(); db.close()
     app.setStyleSheet(previous_style)
 
 
 def test_combo_popup_container_has_no_opaque_square_corners():
     app = QApplication.instance() or QApplication([])
+    previous_style = app.styleSheet(); app.setStyleSheet(application_stylesheet())
     polisher = ComboPopupPolisher(app)
     app.installEventFilter(polisher)
-    combo = QComboBox(); combo.addItems(["미착수", "진행중", "완료"]); combo.show(); combo.showPopup()
+    combo = AppComboBox(); combo.addItems(["미착수", "진행중", "확인요청", "완료", "보류", "해당없음"]); combo.resize(150, 44); combo.show(); combo.showPopup()
     app.processEvents()
     container = combo.view().window()
     assert container.metaObject().className() == "QComboBoxPrivateContainer"
     assert container.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    combo.hidePopup(); combo.close(); app.removeEventFilter(polisher)
+    image = container.grab().toImage()
+    light_pixels = sum(
+        image.pixelColor(x, y).value() >= 200
+        for x in range(image.width())
+        for y in range(image.height())
+    )
+    assert light_pixels / (image.width() * image.height()) > 0.6
+    combo.hidePopup(); combo.close(); app.removeEventFilter(polisher); app.setStyleSheet(previous_style)
+
+
+def test_editable_table_combo_stays_open_when_popup_moves_line_edit_focus():
+    app = QApplication.instance() or QApplication([])
+    table = FastEditableTable(1, 1); table.resize(300, 120); table.show()
+    committed = []
+    table.open_choice_editor(
+        0, 0, [("식", "식"), ("개", "개"), ("명", "명")], "식",
+        lambda value: committed.append(value), editable=True,
+    )
+    editor = table.cellWidget(0, 0)
+    # Model the focus-out signal Qt emits while the native Windows popup is
+    # open.  Opening a second native popup in the offscreen test backend can
+    # corrupt that backend after the popup is destroyed.
+    editor._popup_open = True
+    editor.lineEdit().editingFinished.emit(); app.processEvents()
+    assert table.cellWidget(0, 0) is editor
+    assert committed == []
+    editor._popup_open = False
+    editor.setCurrentIndex(1); editor.activated.emit(1); app.processEvents()
+    assert committed == ["개"]
+    assert table.cellWidget(0, 0) is None
+    del editor
+    app.processEvents()
+    table.close()
 
 
 def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
@@ -251,15 +478,37 @@ def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
     app.processEvents()
     assert all(page.table.property("embeddedEditors") is True for page in pages)
     assert all(page.table.verticalHeader().defaultSectionSize() == 48 for page in pages)
+    assert all(all(page.table.cellWidget(row, column) is None for row in range(page.table.rowCount()) for column in range(page.table.columnCount())) for page in pages)
     settlement = pages[2]
+    target = settlement.table.visualRect(settlement.table.model().index(0, 3))
+    QTest.mouseClick(settlement.table.viewport(), Qt.MouseButton.LeftButton, pos=target.center())
+    app.processEvents()
     editor_rect = settlement.table.cellWidget(0, 3).geometry()
     cell_rect = settlement.table.visualRect(settlement.table.model().index(0, 3))
     assert editor_rect.top() >= cell_rect.top()
     assert editor_rect.bottom() <= cell_rect.bottom()
     subtotal_row = next(row for row in range(settlement.table.rowCount()) if "소계" in settlement.table.item(row, 0).text())
     assert settlement.table.item(subtotal_row, 0).font().pointSize() > settlement.table.item(0, 0).font().pointSize()
+    assert settlement.table.rowSpan(0, 0) > 1
+    assert settlement.table.rowSpan(0, 1) > 1
+    assert pages[0].table.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignHCenter
+    assert pages[0].table.item(0, 10).textAlignment() & Qt.AlignmentFlag.AlignRight
+    assert pages[1].table.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignHCenter
+    assert pages[1].table.item(0, 7).textAlignment() & Qt.AlignmentFlag.AlignRight
+    assert pages[2].table.item(0, 2).textAlignment() & Qt.AlignmentFlag.AlignHCenter
+    assert pages[2].table.item(0, 5).textAlignment() & Qt.AlignmentFlag.AlignRight
     for page in pages: page.close()
     db.close(); app.setStyleSheet(previous_style)
+
+
+def test_contact_spreadsheets_use_shared_center_alignment(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "contact-alignment.db"); page = ContactsPage(db)
+    for table in (page.vendor_table, page.company_people, page.freelancer_table):
+        for row in range(table.rowCount()):
+            for column in range(table.columnCount()):
+                assert table.item(row, column).textAlignment() & Qt.AlignmentFlag.AlignHCenter
+    page.close(); db.close()
 
 
 def test_settings_is_separated_at_sidebar_bottom_and_month_nav_is_centered(tmp_path):
@@ -273,3 +522,165 @@ def test_settings_is_separated_at_sidebar_bottom_and_month_nav_is_centered(tmp_p
     timeline_center = calendar.calendar.mapToGlobal(calendar.calendar.rect().center()).x()
     assert abs(label_center - timeline_center) <= 3
     calendar.close(); window.close(); db.close()
+
+
+def test_calendar_marks_today_and_today_button_restores_current_date(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "calendar-today.db"); service = EventService(db)
+    page = CalendarPage(service, db); page.resize(1200, 780); page.show(); app.processEvents()
+    today = date.today()
+    page.calendar.set_month(today.year - 1, today.month)
+    page.calendar.selected = date(today.year - 1, today.month, 1)
+    page.today_button.click(); app.processEvents()
+    assert (page.calendar.year, page.calendar.month) == (today.year, today.month)
+    assert page.calendar.selected == today
+    assert page.month_label.text() == f"{today.year}년 {today.month}월"
+
+    timeline = page.calendar
+    image = timeline.grab().toImage()
+    weeks = timeline._calendar_weeks()
+    week_index, column = next(
+        (week_index, column)
+        for week_index, week in enumerate(weeks)
+        for column, value in enumerate(week)
+        if value == today
+    )
+    cell_w = timeline.width() / 7
+    row_h = (timeline.height() - 34) / 6
+    left = int(column * cell_w + 5); top = int(34 + week_index * row_h + 3)
+    orange_pixels = sum(
+        image.pixelColor(x, y).name().upper() == "#F25B24"
+        for x in range(left, min(left + 27, image.width()))
+        for y in range(top, min(top + 23, image.height()))
+    )
+    assert orange_pixels > 100
+    page.close(); db.close()
+
+
+def test_event_dialog_places_master_items_on_right_and_shows_freelancer_role(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "event-dialog-layout.db")
+    masters = db.query("SELECT * FROM master_items WHERE active=1 ORDER BY sort_order")
+    freelancers = [{"id": 991, "name": "홍길동", "role_note": "영상 촬영", "phone": ""}]
+    dialog = EventDialog(masters, freelancers=freelancers)
+    dialog.show(); app.processEvents()
+    assert dialog.freelancer_list.item(0).text() == "홍길동  ·  영상 촬영"
+    assert isinstance(dialog.budget_tax_mode, AppComboBox)
+    tree_left = dialog.tree.mapToGlobal(dialog.tree.rect().topLeft()).x()
+    participants_right = dialog.freelancer_list.mapToGlobal(dialog.freelancer_list.rect().topRight()).x()
+    assert tree_left > participants_right
+    dialog.close(); db.close()
+
+
+def test_calendar_cards_use_soft_category_border_colors():
+    app = QApplication.instance() or QApplication([])
+    base = {
+        "id": 21, "name": "일정 카드", "status": "미착수",
+        "planned_start": date.today().isoformat(), "due_date": (date.today() + timedelta(days=3)).isoformat(),
+    }
+    system = CalendarTaskCard({**base, "major": "시스템"})
+    promotion = CalendarTaskCard({**base, "id": 22, "major": "홍보"})
+    assert "#B8D4EA" in system.styleSheet()
+    assert "#D4C8E6" in promotion.styleSheet()
+    assert system.styleSheet() != promotion.styleSheet()
+
+
+def test_clickable_controls_use_hand_cursor_but_text_input_does_not():
+    app = QApplication.instance() or QApplication([])
+    polisher = InteractionCursorPolisher(app); app.installEventFilter(polisher)
+    button, combo, selectable, text = QPushButton("확인"), AppComboBox(), QListWidget(), QLineEdit()
+    combo.addItem("선택"); selectable.addItem("항목")
+    for widget in (button, combo, selectable, text): widget.ensurePolished()
+    assert button.cursor().shape() == Qt.CursorShape.PointingHandCursor
+    assert combo.cursor().shape() == Qt.CursorShape.PointingHandCursor
+    assert selectable.viewport().cursor().shape() == Qt.CursorShape.PointingHandCursor
+    assert text.cursor().shape() != Qt.CursorShape.PointingHandCursor
+    app.removeEventFilter(polisher)
+
+
+def test_selected_event_checklist_is_preloaded_before_menu_click(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "preload.db"); service = EventService(db)
+    ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("사전 로딩", date.today(), date.today() + timedelta(days=3), ids)
+    window = MainWindow(db, enable_update_check=False); window.show(); window.select_event(event_id)
+    QTest.qWait(300)
+    assert window.events._loaded_event_id == event_id
+    calls = 0
+    original = window.events.refresh_tasks
+
+    def counted():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    window.events.refresh_tasks = counted
+    window.nav_buttons[1].click(); app.processEvents()
+    assert calls == 0
+    assert window.settlement._loaded_event_id == event_id
+    window.close(); db.close()
+
+
+def test_startup_splash_appears_with_progress_and_status():
+    app = QApplication.instance() or QApplication([])
+    splash = StartupSplash(); splash.show(); app.processEvents()
+    assert splash.isVisible()
+    assert splash.progress.minimum() == 0 and splash.progress.maximum() == 0
+    splash.set_status("대시보드를 구성하고 있습니다…")
+    assert splash.status.text() == "대시보드를 구성하고 있습니다…"
+    assert splash.width() >= 400 and splash.height() >= 200
+    splash.close()
+
+
+def test_spreadsheet_pages_have_no_priority_ui_and_remain_immediately_scrollable(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "fast-tables.db"); service = EventService(db)
+    ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("성능 검증", date.today(), date.today() + timedelta(days=3), ids)
+
+    page_specs = [
+        ("checklist", lambda: EventsPage(service, db)),
+        ("master", lambda: MasterPage(db)),
+        ("settlement", lambda: SettlementPage(service, db)),
+    ]
+    pages = []
+    for name, factory in page_specs:
+        started = perf_counter(); page = factory()
+        if name != "master":
+            page.set_event(event_id)
+        app.processEvents()
+        assert perf_counter() - started < 0.75
+        assert "우선순위" not in [page.table.horizontalHeaderItem(i).text() for i in range(page.table.columnCount())]
+        assert all(
+            page.table.cellWidget(row, column) is None
+            for row in range(page.table.rowCount())
+            for column in range(page.table.columnCount())
+        )
+        started = perf_counter()
+        page.table.verticalScrollBar().setValue(page.table.verticalScrollBar().maximum())
+        app.processEvents()
+        assert perf_counter() - started < 0.25
+        pages.append(page)
+
+    settlement = pages[2]
+    task_id = next(iter(settlement._items))
+    rows_before = settlement.table.rowCount()
+    refresh_calls = 0
+    original_refresh = settlement.refresh
+
+    def counted_refresh():
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return original_refresh()
+
+    settlement.refresh = counted_refresh
+    started = perf_counter()
+    settlement._commit_value(task_id, 3, "quantity", 2)
+    app.processEvents()
+    assert perf_counter() - started < 0.25
+    assert refresh_calls == 0
+    assert settlement.table.rowCount() == rows_before
+
+    for page in pages:
+        page.close()
+    db.close()

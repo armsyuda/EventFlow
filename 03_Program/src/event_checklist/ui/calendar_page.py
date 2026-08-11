@@ -11,6 +11,15 @@ from ..theme import status_color
 from .month_timeline import MonthTimeline
 
 
+CATEGORY_CARD_BORDERS = {
+    "시스템": "#B8D4EA",
+    "시설": "#BDDCC8",
+    "행사": "#F2C8B8",
+    "홍보": "#D4C8E6",
+    "운영": "#E6D8AE",
+}
+
+
 class CalendarTaskCard(QFrame):
     completion_requested = Signal(int, bool)
     postpone_requested = Signal(int, object)
@@ -25,6 +34,13 @@ class CalendarTaskCard(QFrame):
         due_today = task["status"] != "완료" and due == date.today()
         urgency = "completed" if task["status"] == "완료" else ("critical" if overdue else ("dueToday" if due_today else "normal"))
         self.setProperty("urgency", urgency)
+        border = CATEGORY_CARD_BORDERS.get(task["major"], "#D9DCE1")
+        background = {
+            "critical": "#FDECEC", "dueToday": "#FFF5CC", "completed": "#E8F7EF",
+        }.get(urgency, "#FFFFFF")
+        self.setStyleSheet(
+            f"QFrame#CalendarTaskCard{{background:{background};border:{2 if due_today else 1}px solid {border};border-radius:10px;}}"
+        )
         layout = QVBoxLayout(self); layout.setContentsMargins(14, 11, 14, 11); layout.setSpacing(7)
         top = QHBoxLayout()
         name = QLabel(task["name"]); name.setObjectName("CalendarTaskName"); name.setWordWrap(True)
@@ -34,7 +50,7 @@ class CalendarTaskCard(QFrame):
         badge = QLabel(badge_text); badge.setObjectName("StatusBadge"); badge.setStyleSheet(f"color:{fg};background:{bg};")
         top.addWidget(name, 1); top.addWidget(badge); layout.addLayout(top)
         suffix = "완료" if task["status"] == "완료" else d_day_label(d_day(due))
-        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {suffix} · 우선순위 {task['priority']}")
+        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {suffix}")
         meta.setObjectName("Muted"); layout.addWidget(meta)
         if due_today:
             due_guide = QLabel("오늘까지 완료하거나 아래에서 마감일을 연장하세요.")
@@ -96,7 +112,11 @@ class CalendarPage(QWidget):
         self.previous_button = QPushButton("‹"); self.previous_button.setFixedWidth(42); self.previous_button.clicked.connect(lambda: self._shift(-1))
         self.month_label = QLabel(""); self.month_label.setObjectName("SectionTitle"); self.month_label.setMinimumWidth(110); self.month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.following_button = QPushButton("›"); self.following_button.setFixedWidth(42); self.following_button.clicked.connect(lambda: self._shift(1))
-        navigation.addStretch(); navigation.addWidget(self.previous_button); navigation.addWidget(self.month_label); navigation.addWidget(self.following_button); navigation.addStretch()
+        self.today_button = QPushButton("오늘로 가기")
+        today_width = max(120, self.today_button.fontMetrics().horizontalAdvance(self.today_button.text()) + 44)
+        self.today_button.setFixedWidth(today_width); self.today_button.clicked.connect(self._go_today)
+        balance = QWidget(); balance.setFixedWidth(today_width)
+        navigation.addStretch(); navigation.addWidget(balance); navigation.addWidget(self.previous_button); navigation.addWidget(self.month_label); navigation.addWidget(self.following_button); navigation.addWidget(self.today_button); navigation.addStretch()
         calendar_layout.addLayout(navigation)
         self.calendar = MonthTimeline(); self.calendar.date_selected.connect(self.refresh_selected)
         calendar_layout.addWidget(self.calendar, 1)
@@ -127,6 +147,15 @@ class CalendarPage(QWidget):
 
     def _shift(self, offset):
         self.calendar.shift_month(offset); self._update_month_label(); self.refresh_periods()
+
+    def _go_today(self):
+        today = date.today()
+        self.calendar.set_month(today.year, today.month)
+        self.calendar.selected = today
+        self._update_month_label()
+        self.refresh_periods()
+        self.refresh_selected(today)
+        self.calendar.update()
 
     def _update_month_label(self): self.month_label.setText(f"{self.calendar.year}년 {self.calendar.month}월")
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -17,6 +19,14 @@ class Database:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection: sqlite3.Connection | None = None
+        self._history_directory: Path | None = None
+        self._history_limit = 50
+        self._undo_stack: list[Path] = []
+        self._redo_stack: list[Path] = []
+        self._history_depth = 0
+        self._history_counter = 0
+        self._history_listeners: list[Any] = []
+        self._dirty = False
         self.open()
 
     def open(self) -> None:
@@ -42,12 +52,13 @@ class Database:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        try:
-            yield self.conn
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
+        with self.history_action():
+            try:
+                yield self.conn
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def initialize(self) -> None:
         self.conn.executescript(
@@ -291,10 +302,10 @@ class Database:
             """
             INSERT INTO master_items(
                 id, major, minor, name, detail, anchor, start_offset, due_offset,
-                priority, quantity, unit, sort_order, active
+                quantity, unit, sort_order, active
             ) VALUES (
                 :id, :major, :minor, :name, :detail, :anchor, :start_offset, :due_offset,
-                :priority, :quantity, :unit, :sort_order, :active
+                :quantity, :unit, :sort_order, :active
             )
             """,
             items,
@@ -311,6 +322,11 @@ class Database:
         self.conn.execute("INSERT INTO contacts(kind, name) VALUES ('VENDOR', '(업체 미정)')")
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
+        if self._is_domain_mutation(sql):
+            with self.history_action():
+                cursor = self.conn.execute(sql, params)
+                self.conn.commit()
+                return cursor
         cursor = self.conn.execute(sql, params)
         self.conn.commit()
         return cursor
@@ -334,3 +350,148 @@ class Database:
             "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+    @staticmethod
+    def _is_domain_mutation(sql: str) -> bool:
+        normalized = " ".join(sql.strip().lower().split())
+        if not normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+            return False
+        return not any(token in normalized for token in (
+            " into settings", " update settings", " from settings",
+            " into schema_info", " update schema_info", " from schema_info",
+        ))
+
+    def enable_history(self, directory: Path, limit: int = 50) -> None:
+        """Enable lightweight, session-scoped full database undo snapshots."""
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        session = root / f"session_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}"
+        session.mkdir(parents=True, exist_ok=True)
+        self._history_directory = session
+        self._history_limit = max(1, int(limit))
+        self._dirty = False
+        self._notify_history_changed()
+
+    def add_history_listener(self, callback) -> None:
+        if callback not in self._history_listeners:
+            self._history_listeners.append(callback)
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    @property
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    def mark_backed_up(self) -> None:
+        self._dirty = False
+
+    def _notify_history_changed(self) -> None:
+        for callback in tuple(self._history_listeners):
+            try:
+                callback(self.can_undo, self.can_redo)
+            except RuntimeError:
+                self._history_listeners.remove(callback)
+
+    def _snapshot(self, kind: str) -> Path:
+        if self._history_directory is None:
+            raise RuntimeError("변경 이력이 활성화되지 않았습니다.")
+        self._history_counter += 1
+        target = self._history_directory / f"{kind}_{self._history_counter:06d}.db"
+        self.conn.commit()
+        target_conn = sqlite3.connect(target)
+        try:
+            self.conn.backup(target_conn)
+        finally:
+            target_conn.close()
+        return target
+
+    @staticmethod
+    def _discard(paths: list[Path]) -> None:
+        for path in paths:
+            path.unlink(missing_ok=True)
+        paths.clear()
+
+    def _trim(self, stack: list[Path]) -> None:
+        while len(stack) > self._history_limit:
+            stack.pop(0).unlink(missing_ok=True)
+
+    @contextmanager
+    def history_action(self):
+        outermost = self._history_directory is not None and self._history_depth == 0
+        snapshot = self._snapshot("undo") if outermost else None
+        self._history_depth += 1
+        try:
+            yield
+        except Exception:
+            if snapshot is not None:
+                # A grouped action may contain more than one committed service call.
+                # Restore the starting point so a partially completed edit is never left behind.
+                self._restore_history_snapshot(snapshot)
+                snapshot.unlink(missing_ok=True)
+            raise
+        else:
+            if snapshot is not None:
+                self._undo_stack.append(snapshot)
+                self._trim(self._undo_stack)
+                self._discard(self._redo_stack)
+                self._dirty = True
+                self._notify_history_changed()
+        finally:
+            self._history_depth -= 1
+
+    def _restore_history_snapshot(self, source: Path) -> None:
+        temporary = self.path.with_suffix(".history-restore.tmp")
+        self.close()
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+            self.open()
+
+    def undo(self) -> bool:
+        if not self._undo_stack:
+            return False
+        current = self._snapshot("redo")
+        target = self._undo_stack.pop()
+        self._redo_stack.append(current)
+        self._trim(self._redo_stack)
+        self._restore_history_snapshot(target)
+        target.unlink(missing_ok=True)
+        self._dirty = True
+        self._notify_history_changed()
+        return True
+
+    def redo(self) -> bool:
+        if not self._redo_stack:
+            return False
+        current = self._snapshot("undo")
+        target = self._redo_stack.pop()
+        self._undo_stack.append(current)
+        self._trim(self._undo_stack)
+        self._restore_history_snapshot(target)
+        target.unlink(missing_ok=True)
+        self._dirty = True
+        self._notify_history_changed()
+        return True
+
+    def clear_history(self) -> None:
+        self._discard(self._undo_stack)
+        self._discard(self._redo_stack)
+        self._notify_history_changed()
+
+    def cleanup_history(self) -> None:
+        directory = self._history_directory
+        self.clear_history()
+        self._history_directory = None
+        if directory is not None:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass

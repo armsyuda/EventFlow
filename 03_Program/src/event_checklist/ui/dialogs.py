@@ -4,12 +4,15 @@ from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTextEdit, QTreeWidget,
+    QCheckBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTextEdit, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .widgets import DirectDateEdit, UnitComboBox, configure_money_spin, configure_quantity_spin
+from .widgets import (
+    AddableChoiceField, AppComboBox, DirectDateEdit, UnitComboBox,
+    configure_money_spin, configure_quantity_spin,
+)
 
 
 class EventDialog(QDialog):
@@ -20,14 +23,23 @@ class EventDialog(QDialog):
         # QObject.event() is a native Qt virtual method. Never shadow it with data.
         self.event_record = event
         self.setWindowTitle("행사 수정" if event else "새 행사")
-        self.resize(840, 720 if event else 690)
+        self.resize(900 if event else 1180, 720)
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
-        root.setSpacing(4)
+        root.setSpacing(10)
+
+        content = QHBoxLayout()
+        content.setSpacing(14)
+        left_panel = QWidget()
+        left = QVBoxLayout(left_panel)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(6)
+        content.addWidget(left_panel, 5)
+        root.addLayout(content, 1)
 
         title = QLabel("행사 기본 정보")
         title.setObjectName("SectionTitle")
-        root.addWidget(title)
+        left.addWidget(title)
         form = QFormLayout()
         form.setSpacing(4)
         self.name_edit = QLineEdit(event["name"] if event else "")
@@ -52,7 +64,7 @@ class EventDialog(QDialog):
         configure_money_spin(self.budget_edit)
         if event and event["budget"] is not None:
             self.budget_edit.setValue(event["budget"])
-        self.budget_tax_mode = QComboBox()
+        self.budget_tax_mode = AppComboBox()
         self.budget_tax_mode.addItem("선택하세요", "UNSET")
         self.budget_tax_mode.addItem("부가세 포함", "INCLUDED")
         self.budget_tax_mode.addItem("부가세 별도", "EXCLUDED")
@@ -66,7 +78,7 @@ class EventDialog(QDialog):
         form.addRow("주최 / 주관", self.organizer_edit)
         form.addRow("예산", self.budget_edit)
         form.addRow("예산 부가세", self.budget_tax_mode)
-        root.addLayout(form)
+        left.addLayout(form)
 
         participants = QHBoxLayout()
         vendor_box = QVBoxLayout()
@@ -79,18 +91,23 @@ class EventDialog(QDialog):
         freelancer_box.addWidget(QLabel("참여 프리랜서"))
         self.freelancer_list = QListWidget()
         self.freelancer_list.setMinimumHeight(170 if event else 70)
-        self._populate_check_list(self.freelancer_list, freelancers, set(selected_freelancer_ids))
+        self._populate_check_list(self.freelancer_list, freelancers, set(selected_freelancer_ids), show_role=True)
         freelancer_box.addWidget(self.freelancer_list)
         participants.addLayout(vendor_box, 1)
         participants.addLayout(freelancer_box, 1)
-        root.addLayout(participants, 1)
+        left.addLayout(participants, 1)
 
         if not event:
             row = QHBoxLayout()
             guide = QLabel("준비 시작일부터 최종 행사일까지의 기간에 맞춰 선택한 업무가 일정순으로 자동 배치됩니다.")
             guide.setWordWrap(True)
             guide.setObjectName("InfoGuide")
-            root.addWidget(guide)
+            left.addWidget(guide)
+            item_panel = QFrame()
+            item_panel.setObjectName("EventItemsPanel")
+            item_layout = QVBoxLayout(item_panel)
+            item_layout.setContentsMargins(16, 16, 16, 16)
+            item_layout.setSpacing(10)
             section = QLabel("필요한 기본 항목")
             section.setObjectName("SectionTitle")
             row.addWidget(section)
@@ -99,21 +116,23 @@ class EventDialog(QDialog):
             none_button = QPushButton("전체 해제")
             row.addWidget(all_button)
             row.addWidget(none_button)
-            root.addLayout(row)
+            item_layout.addLayout(row)
             self.tree = QTreeWidget()
-            self.tree.setMinimumHeight(90)
-            self.tree.setHeaderLabels(["분류 / 항목", "행사일 기준 일정", "우선순위"])
-            self.tree.setColumnWidth(0, 440)
+            self.tree.setMinimumWidth(470)
+            self.tree.setHeaderLabels(["분류 / 항목", "행사일 기준 일정"])
+            self.tree.setColumnWidth(0, 245)
+            self.tree.setColumnWidth(1, 170)
             self._populate_tree()
             all_button.clicked.connect(lambda: self._set_all(Qt.CheckState.Checked))
             none_button.clicked.connect(lambda: self._set_all(Qt.CheckState.Unchecked))
-            root.addWidget(self.tree, 1)
+            item_layout.addWidget(self.tree, 1)
+            content.addWidget(item_panel, 4)
         else:
             self.tree = None
             note = QLabel("날짜를 바꾸면 자동 일정만 준비 기간에 맞춰 다시 배치하고, 직접 수정한 일정은 유지됩니다.")
             note.setWordWrap(True)
             note.setObjectName("Muted")
-            root.addWidget(note)
+            left.addWidget(note)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("저장")
@@ -140,7 +159,7 @@ class EventDialog(QDialog):
                 parent.setCheckState(0, Qt.CheckState.Checked)
                 parents[(major, minor)] = parent
             anchor = "행사 시작일" if item["anchor"] == "START" else "행사 종료일"
-            child = QTreeWidgetItem(parent, [item["name"], f"{anchor} D{item['start_offset']:+d} ~ D{item['due_offset']:+d}", item["priority"]])
+            child = QTreeWidgetItem(parent, [item["name"], f"{anchor} D{item['start_offset']:+d} ~ D{item['due_offset']:+d}"])
             child.setData(0, Qt.ItemDataRole.UserRole, item["id"])
             child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             child.setCheckState(0, Qt.CheckState.Checked)
@@ -178,9 +197,13 @@ class EventDialog(QDialog):
         }
 
     @staticmethod
-    def _populate_check_list(widget: QListWidget, rows, selected: set[int]) -> None:
+    def _populate_check_list(widget: QListWidget, rows, selected: set[int], show_role: bool = False) -> None:
         for row in rows:
-            item = QListWidgetItem(row["name"])
+            role = (row["role_note"] or "").strip() if show_role else ""
+            label = f"{row['name']}  ·  {role}" if role else row["name"]
+            item = QListWidgetItem(label)
+            if show_role:
+                item.setToolTip(f"이름: {row['name']}\n역할 / 분야: {role or '미입력'}")
             item.setData(Qt.ItemDataRole.UserRole, int(row["id"]))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if int(row["id"]) in selected else Qt.CheckState.Unchecked)
@@ -273,16 +296,23 @@ class MasterImportDialog(QDialog):
 
 
 class CustomTaskDialog(QDialog):
-    def __init__(self, event, parent=None):
+    def __init__(self, event, parent=None, category_choices=None, unit_choices=None):
         super().__init__(parent)
         self.setWindowTitle("직접 항목 추가")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         form = QFormLayout()
-        self.major = QComboBox()
-        self.major.setEditable(True)
-        self.major.addItems(["시스템", "시설", "행사", "홍보", "운영"])
-        self.minor = QLineEdit()
+        self._minors_by_major = dict(category_choices.minors_by_major) if category_choices else {}
+        self.major = AddableChoiceField(
+            list(category_choices.majors) if category_choices else ["시스템", "시설", "행사", "홍보", "운영"],
+            add_label="+ 새 대분류", dialog_title="새 대분류 추가", prompt="대분류 이름",
+        )
+        self.minor = AddableChoiceField(
+            add_label="+ 새 중분류", dialog_title="새 중분류 추가", prompt="중분류 이름",
+        )
+        self.major.combo.activated.connect(self._major_selected)
+        self.major.value_added.connect(lambda value: self._reload_minors(value))
+        self._reload_minors(self.major.currentText())
         self.name = QLineEdit()
         self.detail = QTextEdit()
         self.detail.setMaximumHeight(90)
@@ -294,11 +324,11 @@ class CustomTaskDialog(QDialog):
         self.quantity.setRange(0, 999_999_999)
         configure_quantity_spin(self.quantity)
         self.quantity.setValue(1)
-        self.unit = UnitComboBox("식")
+        self.unit = UnitComboBox("식", choices=unit_choices)
         self.price = QDoubleSpinBox()
         self.price.setRange(0, 999_999_999_999)
         configure_money_spin(self.price)
-        self.vat = QComboBox()
+        self.vat = AppComboBox()
         self.vat.addItem("VAT 10%", "TAXABLE")
         self.vat.addItem("면세", "EXEMPT")
         for label, widget in [("대분류 *", self.major), ("중분류 *", self.minor), ("항목 *", self.name),
@@ -312,7 +342,7 @@ class CustomTaskDialog(QDialog):
         layout.addWidget(buttons)
 
     def _accept(self):
-        if not self.major.currentText().strip() or not self.minor.text().strip() or not self.name.text().strip():
+        if not self.major.currentText().strip() or not self.minor.currentText().strip() or not self.name.text().strip():
             QMessageBox.warning(self, "입력 확인", "대분류, 중분류, 항목을 모두 입력하세요.")
             return
         if self.due.date() < self.start.date():
@@ -321,11 +351,25 @@ class CustomTaskDialog(QDialog):
         self.accept()
 
     def values(self) -> dict:
-        return {"major": self.major.currentText().strip(), "minor": self.minor.text().strip(),
+        return {"major": self.major.currentText().strip(), "minor": self.minor.currentText().strip(),
                 "name": self.name.text().strip(), "detail": self.detail.toPlainText().strip(),
                 "planned_start": self.start.date().toPython(), "due_date": self.due.date().toPython(),
                 "quantity": int(self.quantity.value()), "unit": self.unit.currentText().strip() or "식",
                 "unit_price": int(self.price.value()) or None, "vat_type": self.vat.currentData()}
+
+    def _major_selected(self, *_args):
+        self._reload_minors(self.major.currentText())
+
+    def _reload_minors(self, major: str, keep_current: bool = False):
+        self._active_major = major.strip()
+        current = self.minor.currentText().strip() if keep_current else ""
+        self.minor.combo.blockSignals(True)
+        self.minor.clear()
+        self.minor.addItems(list(self._minors_by_major.get(major.strip(), ())))
+        if current:
+            self.minor.setCurrentText(current)
+        self.minor.combo.blockSignals(False)
+        self.minor.setToolTip("선택한 대분류의 기존 중분류를 고르거나 새 이름을 직접 입력할 수 있습니다.")
 
 
 class ContactDialog(QDialog):
@@ -359,7 +403,7 @@ class ContactDialog(QDialog):
 
 
 class MasterItemDialog(QDialog):
-    def __init__(self, item=None, people=(), vendors=(), parent=None):
+    def __init__(self, item=None, people=(), vendors=(), parent=None, category_choices=None):
         super().__init__(parent)
         self.item = item
         self.setWindowTitle("기본 항목 수정" if item else "기본 항목 추가")
@@ -367,16 +411,16 @@ class MasterItemDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         form = QFormLayout()
-        self.major = QComboBox()
-        self.major.setEditable(True)
-        self.major.addItems(["시스템", "시설", "행사", "홍보", "운영"])
-        self.minor = QComboBox()
-        self.minor.setEditable(True)
-        self.minor.addItems([
-            "무대", "소스", "기반", "렌탈", "기타", "연출", "개막식", "공연", "경연",
-            "참여,체험", "전시", "먹거리", "판매", "부대행사", "공통", "온라인", "인쇄",
-            "옥외", "행정", "인력", "비품/물품", "환경정리", "기록",
-        ])
+        self._minors_by_major = dict(category_choices.minors_by_major) if category_choices else {}
+        self.major = AddableChoiceField(
+            list(category_choices.majors) if category_choices else ["시스템", "시설", "행사", "홍보", "운영"],
+            add_label="+ 새 대분류", dialog_title="새 대분류 추가", prompt="대분류 이름",
+        )
+        self.minor = AddableChoiceField(
+            add_label="+ 새 중분류", dialog_title="새 중분류 추가", prompt="중분류 이름",
+        )
+        self.major.combo.activated.connect(self._major_selected)
+        self.major.value_added.connect(lambda value: self._reload_minors(value))
         self.name = QLineEdit(item["name"] if item else "")
         self.detail = QTextEdit(item["detail"] if item else "")
         self.detail.setMaximumHeight(100)
@@ -384,27 +428,29 @@ class MasterItemDialog(QDialog):
         self.quantity.setRange(0, 999_999_999)
         configure_quantity_spin(self.quantity)
         self.quantity.setValue((item["quantity"] or 0) if item else 0)
-        self.unit = UnitComboBox(item["unit"] if item and item["unit"] else "식")
+        self.unit = AddableChoiceField(
+            category_choices.units if category_choices else (),
+            item["unit"] if item and item["unit"] else "식",
+            add_label="+ 새 단위", dialog_title="새 단위 추가", prompt="단위 이름",
+        )
         self.base_unit_price = QDoubleSpinBox()
         self.base_unit_price.setRange(0, 999_999_999_999)
         configure_money_spin(self.base_unit_price)
         self.base_unit_price.setValue((item["base_unit_price"] or 0) if item else 0)
-        self.vat_type = QComboBox()
+        self.vat_type = AppComboBox()
         self.vat_type.addItem("VAT 10%", "TAXABLE")
         self.vat_type.addItem("면세", "EXEMPT")
-        self.vendor = QComboBox()
+        self.vendor = AppComboBox()
         self.vendor.addItem("미지정", None)
         for contact in vendors:
             self.vendor.addItem(contact["name"], contact["id"])
-        self.assignee = QComboBox()
+        self.assignee = AppComboBox()
         self.assignee.addItem("미지정", None)
         for contact in people:
             self.assignee.addItem(contact["name"], contact["id"])
-        self.anchor = QComboBox()
+        self.anchor = AppComboBox()
         self.anchor.addItem("행사 시작일", "START")
         self.anchor.addItem("행사 종료일", "END")
-        self.priority = QComboBox()
-        self.priority.addItems(["상", "중", "하"])
         self.start_offset = QDoubleSpinBox()
         self.start_offset.setRange(-365, 365)
         self.start_offset.setDecimals(0)
@@ -415,12 +461,15 @@ class MasterItemDialog(QDialog):
         self.due_offset.setValue(item["due_offset"] if item else -1)
         if item:
             self.major.setCurrentText(item["major"])
-            self.minor.setCurrentText(item["minor"])
+            self._reload_minors(item["major"], item["minor"])
             self.anchor.setCurrentIndex(max(0, self.anchor.findData(item["anchor"])))
-            self.priority.setCurrentText(item["priority"])
             self.vendor.setCurrentIndex(max(0, self.vendor.findData(item["default_vendor_id"])))
             self.assignee.setCurrentIndex(max(0, self.assignee.findData(item["default_assignee_id"])))
             self.vat_type.setCurrentIndex(max(0, self.vat_type.findData(item["default_vat_type"])))
+        else:
+            self._reload_minors(self.major.currentText())
+        self.major.setToolTip("기존 대분류를 고르거나 새 이름을 직접 입력할 수 있습니다.")
+        self.unit.setToolTip("기존 단위를 고르거나 새 단위를 직접 입력할 수 있습니다.")
         form.addRow("대분류 *", self.major)
         form.addRow("중분류 *", self.minor)
         form.addRow("항목 *", self.name)
@@ -434,7 +483,6 @@ class MasterItemDialog(QDialog):
         form.addRow("일정 기준", self.anchor)
         form.addRow("작업 시작일 (D±)", self.start_offset)
         form.addRow("작업 마감일 (D±)", self.due_offset)
-        form.addRow("우선순위", self.priority)
         layout.addLayout(form)
         guide = QLabel("D-30은 선택한 일정 기준일 30일 전, D+1은 기준일 다음 날을 뜻합니다.")
         guide.setObjectName("InfoGuide"); guide.setWordWrap(True); layout.addWidget(guide)
@@ -442,6 +490,19 @@ class MasterItemDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _major_selected(self, *_args):
+        self._reload_minors(self.major.currentText())
+
+    def _reload_minors(self, major: str, current: str = ""):
+        self._active_major = major.strip()
+        self.minor.combo.blockSignals(True)
+        self.minor.clear()
+        self.minor.addItems(list(self._minors_by_major.get(major.strip(), ())))
+        if current.strip():
+            self.minor.setCurrentText(current.strip())
+        self.minor.combo.blockSignals(False)
+        self.minor.setToolTip("선택한 대분류의 기존 중분류를 고르거나 새 이름을 직접 입력할 수 있습니다.")
 
     def _accept(self):
         if not self.major.currentText().strip() or not self.minor.currentText().strip() or not self.name.text().strip():
@@ -467,12 +528,11 @@ class MasterItemDialog(QDialog):
             "anchor": self.anchor.currentData(),
             "start_offset": int(self.start_offset.value()),
             "due_offset": int(self.due_offset.value()),
-            "priority": self.priority.currentText(),
         }
 
 
 class TaskDetailsDialog(QDialog):
-    def __init__(self, task, parent=None):
+    def __init__(self, task, parent=None, unit_choices=None):
         super().__init__(parent)
         self.task = task
         self.setWindowTitle("업무 상세 수정")
@@ -493,7 +553,7 @@ class TaskDetailsDialog(QDialog):
         self.quantity.setRange(0, 999_999_999)
         configure_quantity_spin(self.quantity)
         self.quantity.setValue(task["quantity"] or 0)
-        self.unit = UnitComboBox(task["unit"] or "식")
+        self.unit = UnitComboBox(task["unit"] or "식", choices=unit_choices)
         self.note = QTextEdit(task["note"])
         self.note.setPlaceholderText("이 행사에서만 사용하는 메모를 입력하세요.")
         self.note.setMaximumHeight(140)
