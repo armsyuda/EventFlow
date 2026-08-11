@@ -13,7 +13,7 @@ from .backup import automatic_daily_backup
 from .config import backup_dir, database_path, ensure_directories
 from .database import Database
 from .install_service import is_fixed_installation, is_packaged_app, launch_fixed_installation, repair_shortcuts
-from .theme import application_stylesheet
+from .theme import ComboPopupPolisher, application_stylesheet
 from .ui.main_window import MainWindow
 from .ui.title_bar import app_icon
 
@@ -44,6 +44,8 @@ def main(argv=None) -> int:
     qt_app.setStyle("Fusion")
     qt_app.setWindowIcon(app_icon())
     qt_app.setStyleSheet(application_stylesheet())
+    popup_polisher = ComboPopupPolisher(qt_app)
+    qt_app.installEventFilter(popup_polisher)
     db = None
     try:
         db = Database(database_path())

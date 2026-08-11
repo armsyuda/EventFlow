@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import TOKENS
-from .widgets import KpiCard, UnitComboBox, configure_money_spin, configure_quantity_spin, configure_resizable_table, fit_table_to_view
+from .widgets import KpiCard, UnitComboBox, configure_editable_table, configure_money_spin, configure_quantity_spin, fit_table_to_view
 
 
 def money(value) -> str:
@@ -73,7 +73,7 @@ class SettlementPage(QWidget):
             "VAT 구분", "VAT", "합계", "업체", "메모",
         ])
         self.table.verticalHeader().setVisible(False)
-        configure_resizable_table(self.table, [90, 110, 180, 90, 80, 130, 130, 105, 110, 130, 150, 220])
+        configure_editable_table(self.table, [90, 110, 180, 90, 80, 130, 130, 105, 110, 130, 150, 220])
         root.addWidget(self.table, 1)
 
     def set_event(self, event_id: int | None):
@@ -161,7 +161,7 @@ class SettlementPage(QWidget):
         note = QLineEdit(item["note"] or "")
         note.editingFinished.connect(lambda tid=task_id,w=note:self._update(tid,note=w.text().strip()))
         self.table.setCellWidget(row, 11, note)
-        self.table.setRowHeight(row, 44)
+        self.table.setRowHeight(row, 48)
 
     def _add_subtotal_row(self, major, subtotal):
         row = self.table.rowCount()
@@ -178,8 +178,8 @@ class SettlementPage(QWidget):
                 cell = QTableWidgetItem(""); self.table.setItem(row, column, cell)
             cell.setBackground(QColor(TOKENS["brand_weak"]))
             cell.setForeground(QColor(TOKENS["brand_pressed"]))
-            cell.setFont(QFont(cell.font().family(), cell.font().pointSize(), QFont.Weight.DemiBold))
-        self.table.setRowHeight(row, 38)
+            font = cell.font(); font.setBold(True); font.setPointSize(max(12, font.pointSize() + 2)); cell.setFont(font)
+        self.table.setRowHeight(row, 48)
 
     def _add_total_row(self, summary):
         row = self.table.rowCount(); self.table.insertRow(row)
@@ -192,8 +192,8 @@ class SettlementPage(QWidget):
                 cell = QTableWidgetItem(""); self.table.setItem(row, column, cell)
             cell.setBackground(QColor(TOKENS["brand"]))
             cell.setForeground(QColor("#FFFFFF"))
-            font = cell.font(); font.setBold(True); font.setPointSize(max(11, font.pointSize() + 1)); cell.setFont(font)
-        self.table.setRowHeight(row, 46)
+            font = cell.font(); font.setBold(True); font.setPointSize(max(12, font.pointSize() + 2)); cell.setFont(font)
+        self.table.setRowHeight(row, 50)
 
     def _update(self, task_id, **values):
         if self.loading:

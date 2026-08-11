@@ -314,6 +314,23 @@ def configure_resizable_table(table: QTableWidget, widths: list[int]) -> None:
         table.setColumnWidth(column, width)
 
 
+def configure_editable_table(
+    table: QTableWidget,
+    widths: list[int],
+    *,
+    grouped: bool = False,
+    anchor_column: int = 1,
+) -> None:
+    """Shared presentation contract for spreadsheet-like editable tables."""
+    configure_resizable_table(table, widths)
+    table.setProperty("embeddedEditors", True)
+    table.verticalHeader().setDefaultSectionSize(48)
+    table.verticalHeader().setMinimumSectionSize(48)
+    table.setAlternatingRowColors(True)
+    if grouped:
+        table.setItemDelegate(GroupSeparatorDelegate(anchor_column, table))
+
+
 def fit_table_to_view(table: QTableWidget, minimum: int = 58) -> None:
     """현재 창 너비에 맞춰 표시 중인 모든 열을 비례 조정한다."""
     visible = [column for column in range(table.columnCount()) if not table.isColumnHidden(column)]

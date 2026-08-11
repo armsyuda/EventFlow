@@ -6,20 +6,21 @@ from datetime import date, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QCalendarWidget, QPushButton
+from PySide6.QtWidgets import QApplication, QCalendarWidget, QComboBox, QPushButton
 from PySide6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox
 from PySide6.QtTest import QTest
 
 from event_checklist.database import Database
 from event_checklist.services import EventService
-from event_checklist.ui.calendar_page import CalendarTaskCard
+from event_checklist.ui.calendar_page import CalendarPage, CalendarTaskCard
 from event_checklist.ui.dashboard_page import EventCard
 from event_checklist.ui.dialogs import EventDialog
 from event_checklist.ui.main_window import MainWindow
 from event_checklist.ui.events_page import EventsPage
 from event_checklist.ui.master_page import MasterPage
 from event_checklist.ui.month_timeline import MonthTimeline
-from event_checklist.theme import application_stylesheet
+from event_checklist.ui.settlement_page import SettlementPage
+from event_checklist.theme import ComboPopupPolisher, application_stylesheet
 from event_checklist.ui.widgets import (
     GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, DirectDateEdit, UnitComboBox,
     configure_money_spin, configure_quantity_spin,
@@ -43,7 +44,7 @@ def test_title_bar_shows_current_public_version_and_release_date(tmp_path):
     db = Database(tmp_path / "update-meta.db"); window = MainWindow(db, enable_update_check=False)
     info = UpdateInfo("0.3.3", "v0.3.3", "", "", None, "", "", "2026-08-11T00:41:19Z")
     window._update_check_finished(info)
-    assert "현재 0.3.10" in window.title_bar.update_meta.text()
+    assert "현재 0.3.11" in window.title_bar.update_meta.text()
     assert "공개 0.3.3" in window.title_bar.update_meta.text()
     assert "2026-08-11" in window.title_bar.update_meta.text()
     assert window.title_bar.update_button.text() == "다시 확인"
@@ -223,3 +224,52 @@ def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries
     assert anchor.data(GROUP_MINOR_ROLE)
     checklist.close(); master.close(); db.close()
     app.setStyleSheet(previous_style)
+
+
+def test_combo_popup_container_has_no_opaque_square_corners():
+    app = QApplication.instance() or QApplication([])
+    polisher = ComboPopupPolisher(app)
+    app.installEventFilter(polisher)
+    combo = QComboBox(); combo.addItems(["미착수", "진행중", "완료"]); combo.show(); combo.showPopup()
+    app.processEvents()
+    container = combo.view().window()
+    assert container.metaObject().className() == "QComboBoxPrivateContainer"
+    assert container.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    combo.hidePopup(); combo.close(); app.removeEventFilter(polisher)
+
+
+def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    previous_style = app.styleSheet(); app.setStyleSheet(application_stylesheet())
+    db = Database(tmp_path / "shared-table.db"); service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("공통 표 검증", date.today(), date.today() + timedelta(days=3), master_ids)
+    pages = [EventsPage(service, db), MasterPage(db), SettlementPage(service, db)]
+    pages[0].set_event(event_id); pages[2].set_event(event_id)
+    for page in pages:
+        page.resize(1800, 850); page.show()
+    app.processEvents()
+    assert all(page.table.property("embeddedEditors") is True for page in pages)
+    assert all(page.table.verticalHeader().defaultSectionSize() == 48 for page in pages)
+    settlement = pages[2]
+    editor_rect = settlement.table.cellWidget(0, 3).geometry()
+    cell_rect = settlement.table.visualRect(settlement.table.model().index(0, 3))
+    assert editor_rect.top() >= cell_rect.top()
+    assert editor_rect.bottom() <= cell_rect.bottom()
+    subtotal_row = next(row for row in range(settlement.table.rowCount()) if "소계" in settlement.table.item(row, 0).text())
+    assert settlement.table.item(subtotal_row, 0).font().pointSize() > settlement.table.item(0, 0).font().pointSize()
+    for page in pages: page.close()
+    db.close(); app.setStyleSheet(previous_style)
+
+
+def test_settings_is_separated_at_sidebar_bottom_and_month_nav_is_centered(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "layout.db"); window = MainWindow(db, enable_update_check=False)
+    window.resize(1440, 900); window.show(); app.processEvents()
+    assert window.nav_buttons[4].y() > window.nav_buttons[3].y() + window.nav_buttons[3].height() + 100
+    calendar = CalendarPage(window.service, db)
+    calendar.resize(1200, 780); calendar.show(); app.processEvents()
+    label_center = calendar.month_label.mapToGlobal(calendar.month_label.rect().center()).x()
+    timeline_center = calendar.calendar.mapToGlobal(calendar.calendar.rect().center()).x()
+    assert abs(label_center - timeline_center) <= 3
+    calendar.close(); window.close(); db.close()

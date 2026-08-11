@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from importlib.resources import files
 
+from PySide6.QtCore import QEvent, QObject, Qt
+
 
 TOKENS = {
     "bg_basement": "#F7F8FA",
@@ -23,6 +25,20 @@ TOKENS = {
     "informative": "#1769AA",
     "informative_weak": "#EAF3FB",
 }
+
+
+class ComboPopupPolisher(QObject):
+    """Remove the native square background around rounded combo popups."""
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.Type.Polish
+            and watched.metaObject().className() == "QComboBoxPrivateContainer"
+        ):
+            watched.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            watched.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+            watched.setAutoFillBackground(False)
+        return False
 
 
 def application_stylesheet() -> str:
@@ -49,6 +65,7 @@ def application_stylesheet() -> str:
     QPushButton#UpdateButton:enabled {{ color: white; background: {c['brand']}; }}
     QPushButton#UpdateButton:enabled:hover {{ background: {c['brand_pressed']}; }}
     QFrame#Sidebar {{ background: {c['bg_layer']}; border-right: 1px solid {c['stroke']}; }}
+    QFrame#SidebarSeparator {{ background: {c['stroke']}; border: none; max-height: 1px; }}
     QLabel#AppTitle {{ font-size: 18px; font-weight: 700; color: {c['brand']}; padding: 8px; }}
     QLabel#PageTitle {{ font-size: 26px; font-weight: 700; }}
     QLabel#PageDescription, QLabel#Muted {{ color: {c['fg_muted']}; }}
@@ -99,6 +116,7 @@ def application_stylesheet() -> str:
         border-radius: 9px; padding: 5px; outline: none;
         selection-background-color: {c['brand_weak']}; selection-color: {c['brand_pressed']};
     }}
+    QComboBoxPrivateContainer {{ background: transparent; border: none; padding: 0; }}
     QComboBox QAbstractItemView::item {{ min-height: 34px; padding: 0 9px; border-radius: 6px; }}
     QComboBox QAbstractItemView::item:selected {{ background: {c['brand_weak']}; color: {c['brand_pressed']}; }}
     QCheckBox {{ spacing: 8px; }}
