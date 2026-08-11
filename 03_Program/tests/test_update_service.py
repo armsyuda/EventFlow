@@ -16,19 +16,19 @@ class Response(io.BytesIO):
 
 def test_new_release_is_detected(monkeypatch):
     payload = {
-        "tag_name": "v0.3.8",
+        "tag_name": "v0.3.9",
         "published_at": "2026-08-12T03:00:00Z",
-        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.8",
+        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.9",
         "body": "새 기능",
         "assets": [{
             "name": "EventFlow-Windows.zip",
-            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.8/EventFlow-Windows.zip",
+            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.9/EventFlow-Windows.zip",
             "digest": "sha256:abc",
         }],
     }
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     info = update_service.check_for_update()
-    assert info and info.version == "0.3.8"
+    assert info and info.version == "0.3.9"
     assert info.asset_name == "EventFlow-Windows.zip"
     assert info.published_at == "2026-08-12T03:00:00Z"
 
@@ -98,6 +98,8 @@ def test_update_helper_requires_fixed_install_and_health_check(monkeypatch, tmp_
     assert str(install) in script
     assert "Set-Location -LiteralPath $scriptRoot" in script
     assert "update-0.3.4.log" in script
+    assert "Diagnostics must never be able to cancel an update" in script
+    assert "Add-Content -LiteralPath $log" in script
     assert script.index("try {") < script.index("Expand-Archive")
     assert "RECOVERY relaunch previous application" in script
     assert launched["args"][0] == "powershell.exe"
