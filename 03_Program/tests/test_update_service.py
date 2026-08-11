@@ -16,23 +16,23 @@ class Response(io.BytesIO):
 
 def test_new_release_is_detected(monkeypatch):
     payload = {
-        "tag_name": "v0.3.2",
-        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.2",
+        "tag_name": "v0.3.3",
+        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.3",
         "body": "새 기능",
         "assets": [{
             "name": "EventFlow-Windows.zip",
-            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.2/EventFlow-Windows.zip",
+            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.3/EventFlow-Windows.zip",
             "digest": "sha256:abc",
         }],
     }
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     info = update_service.check_for_update()
-    assert info and info.version == "0.3.2"
+    assert info and info.version == "0.3.3"
     assert info.asset_name == "EventFlow-Windows.zip"
 
 
 def test_same_release_does_not_enable_update(monkeypatch):
-    payload = {"tag_name": "v0.3.1", "assets": []}
+    payload = {"tag_name": "v0.3.2", "assets": []}
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     assert update_service.check_for_update() is None
 

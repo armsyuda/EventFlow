@@ -90,7 +90,7 @@ class CalendarPage(QWidget):
 
     def refresh_selected(self, selected=None):
         selected = selected or self.calendar.selected
-        self.selected_title.setText(selected.strftime("%Y년 %m월 %d일")); self.list.clear()
+        self.selected_title.setText(f"{selected.year:04d}년 {selected.month:02d}월 {selected.day:02d}일"); self.list.clear()
         tasks = self.service.calendar_tasks(selected, self.event_id) if self.event_id else []
         self.selected_count.setText(f"{len(tasks)}개")
         if not tasks:
