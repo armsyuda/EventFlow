@@ -5,10 +5,61 @@ from datetime import date
 
 from PySide6.QtCore import QDate, QEvent, QLocale, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QCalendarWidget, QComboBox, QDateEdit, QDoubleSpinBox, QFrame, QHeaderView, QLabel, QTableWidget, QVBoxLayout
+from PySide6.QtWidgets import (
+    QAbstractItemView, QAbstractSpinBox, QCalendarWidget, QComboBox, QDateEdit,
+    QDoubleSpinBox, QFrame, QHeaderView, QLabel, QStyledItemDelegate,
+    QStyleOptionViewItem, QTableWidget, QVBoxLayout,
+)
 
 from ..theme import TOKENS
 from ..units import COMMON_UNITS
+
+
+GROUP_MAJOR_ROLE = int(Qt.ItemDataRole.UserRole) + 101
+GROUP_MINOR_ROLE = int(Qt.ItemDataRole.UserRole) + 102
+
+
+class GroupSeparatorDelegate(QStyledItemDelegate):
+    """대분류·중분류가 바뀌는 행의 위쪽 경계를 단계별로 강조한다."""
+
+    def __init__(self, anchor_column: int = 1, parent=None):
+        super().__init__(parent)
+        self.anchor_column = anchor_column
+
+    def separator_level(self, model, row: int) -> int:
+        if row <= 0:
+            return 0
+        current = model.index(row, self.anchor_column)
+        previous = model.index(row - 1, self.anchor_column)
+        major = current.data(GROUP_MAJOR_ROLE)
+        previous_major = previous.data(GROUP_MAJOR_ROLE)
+        minor = current.data(GROUP_MINOR_ROLE)
+        previous_minor = previous.data(GROUP_MINOR_ROLE)
+        if major != previous_major:
+            return 2
+        if minor != previous_minor:
+            return 1
+        return 0
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        super().paint(painter, option, index)
+        level = self.separator_level(index.model(), index.row())
+        if not level:
+            return
+        painter.save()
+        color = QColor(TOKENS["brand"] if level == 2 else "#C9CDD3")
+        painter.setPen(QPen(color, 3 if level == 2 else 2))
+        y = option.rect.top() + 1
+        painter.drawLine(option.rect.left(), y, option.rect.right(), y)
+        painter.restore()
+
+
+def configure_grouped_editor_table(table: QTableWidget, anchor_column: int = 1) -> None:
+    """표 안 입력칸을 행 안에 맞추고 분류 변경 경계를 표시한다."""
+    table.setProperty("embeddedEditors", True)
+    table.setItemDelegate(GroupSeparatorDelegate(anchor_column, table))
+    table.verticalHeader().setDefaultSectionSize(48)
+    table.verticalHeader().setMinimumSectionSize(48)
 
 
 class DirectDateEdit(QDateEdit):
