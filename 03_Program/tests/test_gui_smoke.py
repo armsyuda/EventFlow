@@ -39,7 +39,7 @@ def test_title_bar_shows_current_public_version_and_release_date(tmp_path):
     db = Database(tmp_path / "update-meta.db"); window = MainWindow(db, enable_update_check=False)
     info = UpdateInfo("0.3.3", "v0.3.3", "", "", None, "", "", "2026-08-11T00:41:19Z")
     window._update_check_finished(info)
-    assert "현재 0.3.5" in window.title_bar.update_meta.text()
+    assert "현재 0.3.6" in window.title_bar.update_meta.text()
     assert "공개 0.3.3" in window.title_bar.update_meta.text()
     assert "2026-08-11" in window.title_bar.update_meta.text()
     assert window.title_bar.update_button.text() == "다시 확인"

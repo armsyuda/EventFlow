@@ -121,6 +121,7 @@ def launch_installer(archive: Path, info: UpdateInfo, process_id: int) -> None:
     staging = script_dir / f"staging-{info.version}"
     old_dir = install_dir.with_name(f"{install_dir.name}.update-old")
     health_file = script_dir / f"health-{info.version}.ok"
+    log_file = script_dir / f"update-{info.version}.log"
     script = f"""$ErrorActionPreference = 'Stop'
 $archive = '{ps(archive)}'
 $staging = '{ps(staging)}'
@@ -128,25 +129,36 @@ $install = '{ps(install_dir)}'
 $old = '{ps(old_dir)}'
 $exe = Join-Path $install 'EventFlow.exe'
 $health = '{ps(health_file)}'
-for ($i = 0; $i -lt 120; $i++) {{
-    if (-not (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue)) {{ break }}
-    Start-Sleep -Milliseconds 500
+$log = '{ps(log_file)}'
+$scriptRoot = '{ps(script_dir)}'
+function Write-UpdateLog([string]$message) {{
+    Add-Content -LiteralPath $log -Encoding UTF8 -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') $message"
 }}
-if (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue) {{ throw '이벤트 플로우를 종료하지 못했습니다.' }}
-if (Test-Path -LiteralPath $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
-New-Item -ItemType Directory -Path $staging | Out-Null
-Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
-$payload = $staging
-$nested = Join-Path $staging 'EventFlow'
-if (Test-Path -LiteralPath (Join-Path $nested 'EventFlow.exe')) {{ $payload = $nested }}
-if (-not (Test-Path -LiteralPath (Join-Path $payload 'EventFlow.exe'))) {{ throw '업데이트 파일에 EventFlow.exe가 없습니다.' }}
-if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Recurse -Force }}
-if (Test-Path -LiteralPath $health) {{ Remove-Item -LiteralPath $health -Force }}
 $swapped = $false
 try {{
+    Set-Location -LiteralPath $scriptRoot
+    if (Test-Path -LiteralPath $log) {{ Remove-Item -LiteralPath $log -Force }}
+    Write-UpdateLog 'START waiting for the previous app process'
+    for ($i = 0; $i -lt 120; $i++) {{
+        if (-not (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue)) {{ break }}
+        Start-Sleep -Milliseconds 500
+    }}
+    if (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue) {{ throw '이벤트 플로우를 종료하지 못했습니다.' }}
+    Write-UpdateLog 'EXTRACT update archive'
+    if (Test-Path -LiteralPath $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+    $payload = $staging
+    $nested = Join-Path $staging 'EventFlow'
+    if (Test-Path -LiteralPath (Join-Path $nested 'EventFlow.exe')) {{ $payload = $nested }}
+    if (-not (Test-Path -LiteralPath (Join-Path $payload 'EventFlow.exe'))) {{ throw '업데이트 파일에 EventFlow.exe가 없습니다.' }}
+    if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Recurse -Force }}
+    if (Test-Path -LiteralPath $health) {{ Remove-Item -LiteralPath $health -Force }}
+    Write-UpdateLog 'SWAP installed application folder'
     Move-Item -LiteralPath $install -Destination $old
     $swapped = $true
     Move-Item -LiteralPath $payload -Destination $install
+    Write-UpdateLog 'LAUNCH updated application'
     $newProcess = Start-Process -FilePath $exe -ArgumentList @('--update-health-file', $health) -WindowStyle Normal -PassThru
     for ($i = 0; $i -lt 120; $i++) {{
         if (Test-Path -LiteralPath $health) {{ break }}
@@ -160,13 +172,19 @@ try {{
     Remove-Item -LiteralPath $health -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }}
+    Write-UpdateLog 'SUCCESS update completed'
 }} catch {{
+    $failure = $_.Exception.Message
+    Write-UpdateLog "FAILED $failure"
     if ($swapped) {{
         if (Test-Path -LiteralPath $install) {{ Remove-Item -LiteralPath $install -Recurse -Force }}
         if (Test-Path -LiteralPath $old) {{ Move-Item -LiteralPath $old -Destination $install }}
+    }}
+    if (Test-Path -LiteralPath $exe) {{
+        Write-UpdateLog 'RECOVERY relaunch previous application'
         Start-Process -FilePath $exe -WindowStyle Normal
     }}
-    throw
+    exit 1
 }}
 """
     script_path.write_text(script, encoding="utf-8-sig")
@@ -174,4 +192,5 @@ try {{
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)],
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         close_fds=True,
+        cwd=str(script_dir),
     )

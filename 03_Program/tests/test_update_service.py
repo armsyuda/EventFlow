@@ -16,19 +16,19 @@ class Response(io.BytesIO):
 
 def test_new_release_is_detected(monkeypatch):
     payload = {
-        "tag_name": "v0.3.6",
+        "tag_name": "v0.3.7",
         "published_at": "2026-08-12T03:00:00Z",
-        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.6",
+        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.7",
         "body": "새 기능",
         "assets": [{
             "name": "EventFlow-Windows.zip",
-            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.6/EventFlow-Windows.zip",
+            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.7/EventFlow-Windows.zip",
             "digest": "sha256:abc",
         }],
     }
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     info = update_service.check_for_update()
-    assert info and info.version == "0.3.6"
+    assert info and info.version == "0.3.7"
     assert info.asset_name == "EventFlow-Windows.zip"
     assert info.published_at == "2026-08-12T03:00:00Z"
 
@@ -96,7 +96,12 @@ def test_update_helper_requires_fixed_install_and_health_check(monkeypatch, tmp_
     assert "--update-health-file" in script
     assert "이전 버전으로 되돌립니다" in script
     assert str(install) in script
+    assert "Set-Location -LiteralPath $scriptRoot" in script
+    assert "update-0.3.4.log" in script
+    assert script.index("try {") < script.index("Expand-Archive")
+    assert "RECOVERY relaunch previous application" in script
     assert launched["args"][0] == "powershell.exe"
+    assert launched["kwargs"]["cwd"] == str(archive.parent)
 
 
 def test_first_packaged_run_creates_fixed_install_helper(monkeypatch, tmp_path):
