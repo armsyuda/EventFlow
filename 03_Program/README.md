@@ -32,4 +32,14 @@ $env:QT_QPA_PLATFORM = "offscreen"
 .\build_windows.ps1
 ```
 
-결과는 `dist\EventFlow\EventFlow.exe`에 생성됩니다. DB와 백업은 실행 파일 폴더가 아닌 기존 `%LOCALAPPDATA%\EventCheckList`에 보존됩니다.
+결과는 `dist\EventFlow\EventFlow.exe`에 생성됩니다. 배포본을 처음 실행하면 앱 전체가
+`%LOCALAPPDATA%\Programs\EventFlow`에 고정 설치되고 바탕 화면과 시작 메뉴에 `이벤트 플로우`
+바로가기를 만듭니다. DB와 백업은 실행 파일 폴더가 아닌 기존 `%LOCALAPPDATA%\EventCheckList`에 보존됩니다.
+
+## 업데이트 배포
+
+- 앱은 공개 GitHub Release의 `EventFlow-Windows.zip`을 확인합니다.
+- `v0.3.5`처럼 앱 버전과 같은 태그를 push하면 GitHub Actions가 테스트, Windows 빌드와 Release 파일 생성을 자동 수행합니다.
+- 사용자는 새 EXE를 직접 내려받거나 교체하지 않습니다. 앱 상단의 `업데이트` 버튼을 누르면 고정 설치 폴더가 자동 교체됩니다.
+- 새 버전이 정상적으로 시작되지 않으면 이전 설치본으로 자동 복구합니다.
+- 소스 수정은 실행 중인 EXE에 직접 반영될 수 없으므로, 수정된 프로그램 파일 생성 자체는 GitHub Actions가 담당합니다.

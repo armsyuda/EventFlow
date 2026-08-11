@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class Database:
@@ -257,6 +257,22 @@ class Database:
                    WHERE t.assignee_id IS NOT NULL AND c.kind='PERSON' AND c.company_id IS NULL"""
             )
             version = 4
+        if version == 4:
+            from .units import infer_default_unit
+
+            rows = self.conn.execute("SELECT id,major,minor,name,unit FROM master_items").fetchall()
+            for item in rows:
+                if not (item["unit"] or "").strip():
+                    self.conn.execute(
+                        "UPDATE master_items SET unit=? WHERE id=?",
+                        (infer_default_unit(item["major"], item["minor"], item["name"]), item["id"]),
+                    )
+            self.conn.execute(
+                """UPDATE event_tasks
+                   SET unit=(SELECT m.unit FROM master_items m WHERE m.id=event_tasks.master_item_id)
+                   WHERE TRIM(COALESCE(unit,''))='' AND master_item_id IS NOT NULL"""
+            )
+            version = 5
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"DB 마이그레이션 경로가 없습니다: {from_version} → {SCHEMA_VERSION}")
         self.conn.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))
@@ -267,6 +283,10 @@ class Database:
             return
         resource = files("event_checklist").joinpath("resources/master_items.json")
         items = json.loads(resource.read_text(encoding="utf-8"))
+        from .units import infer_default_unit
+        for item in items:
+            if not (item.get("unit") or "").strip():
+                item["unit"] = infer_default_unit(item["major"], item["minor"], item["name"])
         self.conn.executemany(
             """
             INSERT INTO master_items(

@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import traceback
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from .backup import automatic_daily_backup
 from .config import backup_dir, database_path, ensure_directories
 from .database import Database
+from .install_service import is_fixed_installation, is_packaged_app, launch_fixed_installation, repair_shortcuts
 from .theme import application_stylesheet
 from .ui.main_window import MainWindow
 from .ui.title_bar import app_icon
@@ -22,6 +24,7 @@ def _arguments(argv=None):
     parser.add_argument("--data-dir", help="개발·검증용 사용자 데이터 폴더")
     parser.add_argument("--screenshot", help="검수용으로 창 이미지를 저장한 뒤 종료")
     parser.add_argument("--page", type=int, choices=range(0, 5), default=0, help="검수용 시작 화면 번호")
+    parser.add_argument("--update-health-file", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -30,6 +33,11 @@ def main(argv=None) -> int:
     if args.data_dir:
         os.environ["EVENT_CHECKLIST_DATA_DIR"] = args.data_dir
     ensure_directories()
+    if is_packaged_app() and not args.smoke_test and not args.screenshot:
+        if not is_fixed_installation():
+            launch_fixed_installation(os.getpid())
+            return 0
+        repair_shortcuts()
     qt_app = QApplication(sys.argv[:1])
     qt_app.setApplicationName("이벤트 플로우")
     qt_app.setOrganizationName("EventFlow")
@@ -44,6 +52,9 @@ def main(argv=None) -> int:
         if args.page:
             window.nav_buttons[args.page].click()
         window.show()
+        if args.update_health_file:
+            health_file = Path(args.update_health_file)
+            QTimer.singleShot(500, lambda: health_file.write_text("ok", encoding="ascii"))
         if args.screenshot:
             def capture_and_quit():
                 window.grab().save(args.screenshot)

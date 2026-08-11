@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.resources import files
+
 
 TOKENS = {
     "bg_basement": "#F7F8FA",
@@ -25,6 +27,8 @@ TOKENS = {
 
 def application_stylesheet() -> str:
     c = TOKENS
+    checkmark = str(files("event_checklist").joinpath("resources/assets/checkmark.svg")).replace("\\", "/")
+    minus = str(files("event_checklist").joinpath("resources/assets/minus.svg")).replace("\\", "/")
     return f"""
     * {{
         font-family: "Segoe UI", "Malgun Gothic", sans-serif;
@@ -35,6 +39,7 @@ def application_stylesheet() -> str:
     QFrame#TitleBar {{ background: {c['bg_layer']}; border-bottom: 1px solid {c['stroke']}; }}
     QLabel#TitleBarName {{ font-weight: 700; font-size: 14px; }}
     QLabel#TitleBarEvent {{ color: {c['fg_muted']}; border-left: 1px solid {c['stroke']}; padding-left: 10px; }}
+    QLabel#UpdateMeta {{ color: {c['fg_muted']}; font-size: 12px; padding: 0 4px 0 10px; }}
     QPushButton#TitleControlButton, QPushButton#TitleCloseButton {{
         min-height: 44px; padding: 0; border: none; border-radius: 0; background: transparent; font-size: 16px;
     }}
@@ -72,6 +77,8 @@ def application_stylesheet() -> str:
     QPushButton[nav="true"]:disabled {{ color: #B1B5BC; background: transparent; }}
     QFrame#Card {{ background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 12px; }}
     QFrame#EventCard {{ background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 12px; }}
+    QFrame#EventCard:hover {{ background: {c['brand_weak']}; border-color: #F7C5AE; }}
+    QFrame#EventCard:focus {{ border: 2px solid {c['brand']}; }}
     QLabel#EventCardTitle {{ font-size: 16px; font-weight: 700; }}
     QScrollArea#EventListArea {{ border: none; background: transparent; }}
     QScrollArea#EventListArea > QWidget > QWidget {{ background: transparent; }}
@@ -84,11 +91,29 @@ def application_stylesheet() -> str:
     QTextEdit {{ padding: 8px; }}
     QComboBox::drop-down {{ border: none; width: 28px; }}
     QDateEdit[directCalendar="true"] {{ padding-right: 10px; }}
+    QDateEdit[directCalendar="true"] QLineEdit {{ background: transparent; border: none; padding: 0; }}
     QDateEdit[directCalendar="true"]::drop-down {{ width: 0px; border: none; background: transparent; }}
     QDateEdit[directCalendar="true"]::down-arrow {{ image: none; width: 0px; height: 0px; }}
     QComboBox QAbstractItemView {{
         background: {c['bg_layer']}; color: {c['fg_neutral']}; border: 1px solid {c['stroke']};
-        selection-background-color: {c['brand_weak']}; selection-color: {c['fg_neutral']};
+        border-radius: 9px; padding: 5px; outline: none;
+        selection-background-color: {c['brand_weak']}; selection-color: {c['brand_pressed']};
+    }}
+    QComboBox QAbstractItemView::item {{ min-height: 34px; padding: 0 9px; border-radius: 6px; }}
+    QComboBox QAbstractItemView::item:selected {{ background: {c['brand_weak']}; color: {c['brand_pressed']}; }}
+    QCheckBox {{ spacing: 8px; }}
+    QCheckBox::indicator, QTreeView::indicator, QListView::indicator {{
+        width: 19px; height: 19px; border: 1px solid #C9CDD3; border-radius: 5px; background: {c['bg_layer']};
+    }}
+    QCheckBox::indicator:hover, QTreeView::indicator:hover, QListView::indicator:hover {{ border-color: {c['brand']}; }}
+    QCheckBox::indicator:checked, QTreeView::indicator:checked, QListView::indicator:checked {{
+        background: {c['brand']}; border-color: {c['brand']}; image: url("{checkmark}");
+    }}
+    QCheckBox::indicator:indeterminate, QTreeView::indicator:indeterminate, QListView::indicator:indeterminate {{
+        background: {c['brand']}; border-color: {c['brand']}; image: url("{minus}");
+    }}
+    QCheckBox::indicator:disabled, QTreeView::indicator:disabled, QListView::indicator:disabled {{
+        background: {c['bg_weak']}; border-color: {c['stroke']};
     }}
     QTableWidget, QTreeWidget, QListWidget, QCalendarWidget {{
         background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 10px;
@@ -153,9 +178,17 @@ def application_stylesheet() -> str:
     QListWidget#CalendarTaskList::item {{ background: transparent; border: none; }}
     QListWidget#CalendarTaskList::item:selected {{ background: transparent; color: {c['fg_neutral']}; }}
     QFrame#CalendarTaskCard {{ background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 10px; }}
+    QFrame#CalendarTaskCard[urgency="critical"] {{ background: {c['critical_weak']}; border-color: #F1BBB7; }}
+    QFrame#CalendarTaskCard[urgency="dueToday"] {{ background: {c['warning_weak']}; border: 2px solid {c['warning']}; }}
+    QFrame#CalendarTaskCard[urgency="warning"] {{ background: {c['warning_weak']}; border-color: #E9D77E; }}
+    QFrame#CalendarTaskCard[urgency="completed"] {{ background: {c['positive_weak']}; border-color: #B9DEC9; }}
+    QLabel#DueTodayGuide {{ color: #8A4B08; font-size: 12px; font-weight: 700; }}
     QLabel#CalendarEventName {{ color: {c['fg_muted']}; font-size: 12px; }}
     QLabel#CalendarTaskName {{ color: {c['fg_neutral']}; font-size: 15px; font-weight: 700; }}
     QLabel#StatusBadge {{ border-radius: 9px; padding: 3px 8px; font-size: 12px; font-weight: 700; }}
+    QPushButton[compact="true"] {{ min-height: 30px; padding: 0 10px; border-radius: 7px; font-size: 12px; }}
+    QPushButton[success="true"] {{ color: {c['positive']}; background: {c['positive_weak']}; border-color: #B9DEC9; }}
+    QPushButton[warning="true"] {{ color: {c['warning']}; background: {c['warning_weak']}; border-color: #E9D77E; }}
     QDialog {{ background: {c['bg_basement']}; }}
     QDialogButtonBox QPushButton {{ min-width: 96px; }}
     QToolTip {{ background: {c['fg_neutral']}; color: white; padding: 6px; border: none; }}

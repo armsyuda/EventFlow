@@ -28,6 +28,7 @@ class EventsPage(QWidget):
         self.db = db
         self.event_id: int | None = None
         self.loading = False
+        self._loaded_event_id: int | None = None
         self._current_tasks = []
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 28, 32, 32)
@@ -99,11 +100,17 @@ class EventsPage(QWidget):
         self.table.doubleClicked.connect(self.edit_task_details)
         root.addWidget(self.table, 1)
 
-    def set_event(self, event_id: int | None):
+    def set_event(self, event_id: int | None, *, force: bool = False):
+        if not force and self._loaded_event_id == event_id:
+            return
         self.event_id = event_id
         event = self.service.get_event(event_id) if event_id else None
         self.description.setText(f"{event['name']}의 업무 상태와 일정을 관리합니다." if event else "행사를 선택하세요.")
         self.refresh_tasks()
+        self._loaded_event_id = event_id
+
+    def invalidate(self):
+        self._loaded_event_id = None
 
     def refresh_events(self, selected_event_id: int | None = None):
         self.set_event(selected_event_id if selected_event_id is not None else self.event_id)
@@ -170,10 +177,14 @@ class EventsPage(QWidget):
 
     def refresh_tasks(self):
         self.loading = True
+        self.table.setUpdatesEnabled(False)
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         if not self.event_id:
             self.summary.setText("행사를 선택하세요")
             self.loading = False
+            self.table.blockSignals(False)
+            self.table.setUpdatesEnabled(True)
             return
         tasks = self.service.list_tasks(
             self.event_id, self.search.text().strip(), self.status_filter.currentData() or "",
@@ -183,6 +194,14 @@ class EventsPage(QWidget):
         self._current_tasks = tasks
         participants = self.service.event_participants(self.event_id)
         vendors = participants["vendors"]
+        # 전체 담당자를 한 번만 읽고 업체별로 메모리에서 나눈다. 기존에는
+        # 항목마다 같은 DB 조회를 반복해 120개 항목에서 큰 지연이 발생했다.
+        all_assignees = self.service.available_assignees(self.event_id)
+        freelancers = [row for row in all_assignees if not row["company_id"]]
+        assignees_by_vendor = {
+            int(vendor["id"]): freelancers + [row for row in all_assignees if row["company_id"] == vendor["id"]]
+            for vendor in vendors
+        }
         self.table.setRowCount(len(tasks))
         for row_index, task in enumerate(tasks):
             task_id = int(task["id"])
@@ -206,7 +225,8 @@ class EventsPage(QWidget):
             priority = QComboBox(); priority.addItems(PRIORITIES); priority.setCurrentText(task["priority"])
             priority.currentTextChanged.connect(lambda value, tid=task_id: self._update(tid, priority=value))
             self.table.setCellWidget(row_index, 4, priority)
-            assignees = self.service.available_assignees(self.event_id, task["vendor_id"])
+            assignees = (assignees_by_vendor.get(int(task["vendor_id"]), freelancers)
+                         if task["vendor_id"] else all_assignees)
             self.table.setCellWidget(row_index, 5, self._contact_combo(assignees, task["assignee_id"], task_id, "assignee_id"))
             self.table.setCellWidget(row_index, 6, self._date_edit(task["planned_start"], task_id, "planned_start"))
             self.table.setCellWidget(row_index, 7, self._date_edit(task["due_date"], task_id, "due_date"))
@@ -221,6 +241,9 @@ class EventsPage(QWidget):
             self.table.setRowHeight(row_index, 46)
         self.summary.setText(f"{len(tasks)}개 항목" + (" · 제외 기록" if self.removed_toggle.isChecked() else ""))
         self.loading = False
+        self.table.blockSignals(False)
+        self.table.setUpdatesEnabled(True)
+        self.table.viewport().update()
 
     def _contact_combo(self, rows, current, task_id, field):
         combo = QComboBox(); combo.addItem("미지정", None)

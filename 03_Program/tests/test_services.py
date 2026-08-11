@@ -105,3 +105,22 @@ def test_event_participants_and_company_assignees(db):
                                     vendor_ids=[vendor["id"]], freelancer_ids=[freelancer["id"]])
     available = {row["id"] for row in service.available_assignees(event_id, vendor["id"])}
     assert {person_id, freelancer["id"]} <= available
+
+
+def test_calendar_hides_completed_bars_but_lists_completed_last(db):
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY id LIMIT 3")
+    selected = date.today()
+    event_id = service.create_event("달력 상태", selected, selected, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+    for task in tasks:
+        service.update_task(task["id"], planned_start=selected.isoformat(), due_date=selected.isoformat())
+    service.update_task(tasks[0]["id"], status="완료")
+    service.update_task(tasks[1]["id"], status="진행중", priority="상")
+
+    bars = service.calendar_range(selected, selected, event_id)
+    listed = service.calendar_tasks(selected, event_id)
+
+    assert tasks[0]["id"] not in {row["id"] for row in bars}
+    assert listed[-1]["status"] == "완료"
+    assert listed[0]["status"] == "진행중"

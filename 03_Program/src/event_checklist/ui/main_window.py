@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QButtonGroup, QFrame, QHBoxLayout, Q
 from ..config import backup_dir
 from .. import __version__
 from ..services import EventService
-from ..update_service import UpdateInfo, check_for_update, download_update, is_packaged_app, launch_installer
+from ..update_service import UpdateInfo, download_update, fetch_latest_release, is_packaged_app, launch_installer, version_tuple
 from .calendar_page import CalendarPage
 from .dashboard_page import DashboardPage
 from .dialogs import EventDialog
@@ -25,7 +25,7 @@ class UpdateCheckThread(QThread):
     finished_with_result = Signal(object)
     failed = Signal()
     def run(self):
-        try: self.finished_with_result.emit(check_for_update())
+        try: self.finished_with_result.emit(fetch_latest_release())
         except Exception: self.failed.emit()
 
 
@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         self.dashboard.clear_requested.connect(lambda: self.select_event(None))
         self.events.edit_requested.connect(self.edit_event)
         self.events.changed.connect(self.refresh_dynamic)
+        self.calendar.changed.connect(self.refresh_dynamic)
         self.settings.contacts_changed.connect(self.refresh_dynamic)
         self.settings.restored.connect(lambda: self.select_event(None))
         self.title_bar.update_button.clicked.connect(self.install_available_update)
@@ -81,7 +82,7 @@ class MainWindow(QMainWindow):
         self.update_download_thread = None
         self.select_event(None)
         if is_packaged_app() and enable_update_check: QTimer.singleShot(700, self.check_updates)
-        else: self.title_bar.set_update_available(None)
+        else: self.title_bar.set_update_status()
 
     def _build_sidebar(self):
         sidebar = QFrame(); sidebar.setObjectName("Sidebar"); sidebar.setFixedWidth(212)
@@ -102,6 +103,8 @@ class MainWindow(QMainWindow):
     def _navigate(self, index):
         if index in (1, 2, 3) and not self.selected_event_id:
             return
+        if self.stack.currentIndex() == index:
+            return
         self.stack.setCurrentIndex(index)
         if index == 0: self.dashboard.set_event(self.selected_event_id)
         elif index == 1: self.events.set_event(self.selected_event_id)
@@ -111,13 +114,18 @@ class MainWindow(QMainWindow):
 
     def select_event(self, event_id: int | None):
         event = self.service.get_event(event_id) if event_id else None
+        previous_event_id = self.selected_event_id
         self.selected_event_id = int(event_id) if event else None
         for index in (1, 2, 3): self.nav_buttons[index].setEnabled(bool(event))
         self.title_bar.set_event_name(event["name"] if event else None)
         self.dashboard.set_event(self.selected_event_id)
-        self.events.set_event(self.selected_event_id)
-        self.calendar.set_event(self.selected_event_id)
-        self.settlement.set_event(self.selected_event_id)
+        # 선택 직후에는 대시보드만 그린다. 나머지 무거운 화면은 해당 메뉴를
+        # 처음 눌렀을 때 로드해 행사 선택 응답을 즉시 유지한다.
+        if previous_event_id != self.selected_event_id:
+            self.events.event_id = self.selected_event_id
+            self.events.invalidate()
+            self.calendar.event_id = self.selected_event_id
+            self.settlement.event_id = self.selected_event_id
         self.nav_buttons[0].setChecked(True); self.stack.setCurrentIndex(0)
 
     def _contacts_for_event_dialog(self):
@@ -152,6 +160,7 @@ class MainWindow(QMainWindow):
             self.service.set_event_participants(event_id, dialog.selected_vendor_ids(), dialog.selected_freelancer_ids())
         except Exception as exc:
             QMessageBox.critical(self, "행사 수정 실패", str(exc)); return
+        self.events.invalidate()
         self.select_event(event_id)
 
     def delete_event(self, event_id):
@@ -167,28 +176,30 @@ class MainWindow(QMainWindow):
 
     def refresh_dynamic(self, _event_id=0):
         if not self.selected_event_id: return
-        self.dashboard.set_event(self.selected_event_id)
-        self.calendar.set_event(self.selected_event_id)
-        self.settlement.set_event(self.selected_event_id)
+        # 보이지 않는 화면까지 즉시 다시 만드는 대신 다음 메뉴 진입 때 최신
+        # 데이터를 읽는다. 현재 화면은 각 페이지가 변경 직후 자체 갱신한다.
+        self.events.invalidate()
 
     def refresh_all(self, event_id=None): self.select_event(event_id)
 
     def check_updates(self):
         if self.update_check_thread and self.update_check_thread.isRunning(): return
-        self.title_bar.update_button.setText("업데이트 확인 중"); self.title_bar.update_button.setEnabled(False)
+        self.title_bar.set_update_checking()
         self.update_check_thread = UpdateCheckThread(self)
         self.update_check_thread.finished_with_result.connect(self._update_check_finished)
         self.update_check_thread.failed.connect(self.title_bar.set_update_error)
         self.update_check_thread.start()
 
     def _update_check_finished(self, info):
-        self.available_update = info
-        self.title_bar.set_update_available(info.version if info else None)
-        if info: self.title_bar.update_button.setToolTip(f"이벤트 플로우 {info.version} 설치")
+        update_available = bool(info and version_tuple(info.version) > version_tuple(__version__))
+        self.available_update = info if update_available else None
+        self.title_bar.set_update_status(info, update_available)
 
     def install_available_update(self):
         info = self.available_update
-        if not info: return
+        if not info:
+            self.check_updates()
+            return
         if not info.asset_url:
             webbrowser.open(info.release_url); return
         answer = QMessageBox.question(

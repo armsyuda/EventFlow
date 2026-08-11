@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 APP_NAME = "EventCheckList"
+PRODUCT_NAME = "EventFlow"
 
 
 def data_root() -> Path:
@@ -24,7 +25,18 @@ def backup_dir() -> Path:
     return data_root() / "backups"
 
 
+def update_dir() -> Path:
+    return data_root() / "updates"
+
+
+def install_dir() -> Path:
+    """Return the per-user, stable application installation directory."""
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else Path.home() / "AppData" / "Local"
+    return base / "Programs" / PRODUCT_NAME
+
+
 def ensure_directories() -> None:
     database_path().parent.mkdir(parents=True, exist_ok=True)
     backup_dir().mkdir(parents=True, exist_ok=True)
-
+    update_dir().mkdir(parents=True, exist_ok=True)

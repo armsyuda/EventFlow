@@ -13,13 +13,31 @@ class EventCard(QFrame):
     selected = Signal(int)
     def __init__(self, event, progress, parent=None):
         super().__init__(parent); self.event_id = int(event["id"]); self.setObjectName("EventCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip("클릭하여 이 행사를 엽니다.")
         layout = QHBoxLayout(self); layout.setContentsMargins(18, 14, 14, 14)
         text = QVBoxLayout(); name = QLabel(event["name"]); name.setObjectName("EventCardTitle")
         dates = QLabel(f"준비 {event['start_date']}  →  행사 {event['end_date'] or event['start_date']}"); dates.setObjectName("Muted")
         text.addWidget(name); text.addWidget(dates); layout.addLayout(text, 1)
         rate = QLabel(f"진행률 {progress}%"); rate.setObjectName("Muted")
-        choose = QPushButton("선택"); choose.setProperty("primary", True); choose.clicked.connect(lambda: self.selected.emit(self.event_id))
-        layout.addWidget(rate); layout.addWidget(choose)
+        layout.addWidget(rate)
+        for child in (name, dates, rate):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.selected.emit(self.event_id)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.selected.emit(self.event_id)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class DashboardPage(QWidget):
