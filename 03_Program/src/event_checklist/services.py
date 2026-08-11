@@ -41,7 +41,7 @@ class EventService:
             raise ValueError("하나 이상의 기본 항목을 선택하세요.")
         placeholders = ",".join("?" for _ in ids)
         masters = self.db.query(
-            f"SELECT * FROM master_items WHERE active=1 AND id IN ({placeholders}) ORDER BY sort_order", ids
+            f"SELECT * FROM master_items WHERE id IN ({placeholders}) ORDER BY sort_order", ids
         )
         if len(masters) != len(ids):
             raise ValueError("선택한 기본 항목 중 사용할 수 없는 항목이 있습니다.")
@@ -79,13 +79,13 @@ class EventService:
                 conn.execute(
                     """
                     INSERT INTO event_tasks(
-                        event_id,master_item_id,major,minor,name,detail,status,priority,quantity,unit,assignee_id,vendor_id,
+                        event_id,master_item_id,major,minor,name,detail,status,quantity,unit,assignee_id,vendor_id,
                         planned_start,due_date,schedule_mode,anchor,start_offset,due_offset,sort_order,unit_price,vat_type
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         event_id, item["id"], item["major"], item["minor"], item["name"], item["detail"],
-                        "미착수", item["priority"], item["quantity"], item["unit"],
+                        "미착수", item["quantity"], item["unit"],
                         item["default_assignee_id"], item["default_vendor_id"],
                         schedule.planned_start.isoformat(), schedule.due_date.isoformat(), "auto",
                         item["anchor"], item["start_offset"], item["due_offset"], item["sort_order"],
@@ -155,12 +155,12 @@ class EventService:
         if major:
             sql += " AND t.major=?"
             params.append(major)
-        sql += " ORDER BY t.due_date, CASE t.priority WHEN '상' THEN 1 WHEN '중' THEN 2 ELSE 3 END, t.sort_order"
+        sql += " ORDER BY t.due_date, t.sort_order"
         return self.db.query(sql, params)
 
     def update_task(self, task_id: int, **fields) -> None:
         allowed = {
-            "status", "priority", "quantity", "unit", "assignee_id", "vendor_id",
+            "status", "quantity", "unit", "assignee_id", "vendor_id",
             "planned_start", "due_date", "cost", "note", "detail", "required",
             "unit_price", "vat_type", "is_removed", "removed_reason",
         }
@@ -211,7 +211,7 @@ class EventService:
         data["progress"] = completed / managed if managed else 0.0
         data["urgent"] = self.db.query(
             """
-            SELECT id,name,status,priority,due_date,
+            SELECT id,name,status,due_date,
                    CAST(julianday(due_date)-julianday(date('now','localtime')) AS INTEGER) dday
             FROM event_tasks
             WHERE event_id=? AND is_removed=0 AND required=1 AND status NOT IN ('완료','해당없음')
@@ -235,14 +235,12 @@ class EventService:
         sql += """ ORDER BY
             CASE WHEN t.status='완료' THEN 1 ELSE 0 END,
             CASE WHEN t.status<>'완료' AND t.due_date < date('now','localtime') THEN 0 ELSE 1 END,
-            t.due_date,
-            CASE t.priority WHEN '상' THEN 1 WHEN '중' THEN 2 ELSE 3 END,
-            t.sort_order"""
+            t.due_date, t.sort_order"""
         return self.db.query(sql, params)
 
     def calendar_range(self, first: date, last: date, event_id: int | None = None):
         sql = """
-            SELECT id,event_id,name,major,priority,sort_order,planned_start,due_date,status
+            SELECT id,event_id,name,major,sort_order,planned_start,due_date,status
             FROM event_tasks WHERE is_removed=0 AND status NOT IN ('완료','해당없음')
               AND due_date>=? AND planned_start<=?
         """
@@ -250,7 +248,7 @@ class EventService:
         if event_id:
             sql += " AND event_id=?"
             params.append(event_id)
-        sql += " ORDER BY due_date, CASE priority WHEN '상' THEN 1 WHEN '중' THEN 2 ELSE 3 END, sort_order"
+        sql += " ORDER BY due_date, sort_order"
         return self.db.query(sql, params)
 
     def set_event_participants(self, event_id: int, vendor_ids=(), freelancer_ids=()) -> None:
@@ -320,7 +318,7 @@ class EventService:
                         conn.execute("UPDATE event_tasks SET is_removed=0,removed_reason='' WHERE id=?", (existing["id"],))
                         restored += 1
                     continue
-                item = conn.execute("SELECT * FROM master_items WHERE id=? AND active=1", (master_id,)).fetchone()
+                item = conn.execute("SELECT * FROM master_items WHERE id=?", (master_id,)).fetchone()
                 if not item:
                     continue
                 schedule = calculate_schedule(
@@ -330,11 +328,11 @@ class EventService:
                 )
                 conn.execute(
                     """INSERT INTO event_tasks(
-                       event_id,master_item_id,major,minor,name,detail,status,priority,quantity,unit,
+                       event_id,master_item_id,major,minor,name,detail,status,quantity,unit,
                        assignee_id,vendor_id,planned_start,due_date,schedule_mode,anchor,start_offset,due_offset,
-                       sort_order,unit_price,vat_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       sort_order,unit_price,vat_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (event_id,item["id"],item["major"],item["minor"],item["name"],item["detail"],"미착수",
-                     item["priority"],item["quantity"],item["unit"],item["default_assignee_id"],item["default_vendor_id"],
+                     item["quantity"],item["unit"],item["default_assignee_id"],item["default_vendor_id"],
                      schedule.planned_start.isoformat(),schedule.due_date.isoformat(),"auto",item["anchor"],
                      item["start_offset"],item["due_offset"],item["sort_order"],item["base_unit_price"],item["default_vat_type"]),
                 )
@@ -348,9 +346,9 @@ class EventService:
             raise ValueError("항목명과 올바른 작업 기간을 입력하세요.")
         next_order = self.db.one("SELECT COALESCE(MAX(sort_order),0)+1 n FROM event_tasks WHERE event_id=?", (event_id,))["n"]
         cursor = self.db.execute(
-            """INSERT INTO event_tasks(event_id,major,minor,name,detail,status,priority,quantity,unit,
+            """INSERT INTO event_tasks(event_id,major,minor,name,detail,status,quantity,unit,
                planned_start,due_date,schedule_mode,anchor,start_offset,due_offset,sort_order,unit_price,vat_type)
-               VALUES (?,?,?,?,?,'미착수','중',?,?,?,?, 'manual','START',0,0,?,?,?)""",
+               VALUES (?,?,?,?,?,'미착수',?,?,?,?, 'manual','START',0,0,?,?,?)""",
             (event_id,major.strip(),minor.strip(),name.strip(),detail.strip(),quantity,unit.strip(),
              planned_start.isoformat(),due_date.isoformat(),next_order,unit_price,vat_type),
         )

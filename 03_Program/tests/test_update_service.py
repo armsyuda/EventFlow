@@ -16,19 +16,19 @@ class Response(io.BytesIO):
 
 def test_new_release_is_detected(monkeypatch):
     payload = {
-        "tag_name": "v0.3.12",
+        "tag_name": "v0.3.24",
         "published_at": "2026-08-12T03:00:00Z",
-        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.12",
+        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.24",
         "body": "새 기능",
         "assets": [{
             "name": "EventFlow-Windows.zip",
-            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.12/EventFlow-Windows.zip",
+            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.24/EventFlow-Windows.zip",
             "digest": "sha256:abc",
         }],
     }
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     info = update_service.check_for_update()
-    assert info and info.version == "0.3.12"
+    assert info and info.version == "0.3.24"
     assert info.asset_name == "EventFlow-Windows.zip"
     assert info.published_at == "2026-08-12T03:00:00Z"
 

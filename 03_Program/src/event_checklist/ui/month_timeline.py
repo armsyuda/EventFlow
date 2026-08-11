@@ -48,14 +48,13 @@ class MonthTimeline(QWidget):
         return weeks[:6]
 
     @staticmethod
-    def _priority(task):
-        return (task["status"] == "완료", date.fromisoformat(task["due_date"]),
-                {"상": 0, "중": 1, "하": 2}.get(task["priority"], 3), task["sort_order"])
+    def _display_order(task):
+        return (task["status"] == "완료", date.fromisoformat(task["due_date"]), task["sort_order"])
 
     def _week_segments(self, week, lane_capacity):
         start, end = week[0], week[-1]
         candidates = []
-        for task in sorted(self.tasks, key=self._priority):
+        for task in sorted(self.tasks, key=self._display_order):
             task_start, task_end = date.fromisoformat(task["planned_start"]), date.fromisoformat(task["due_date"])
             if task_end < start or task_start > end:
                 continue
@@ -101,9 +100,16 @@ class MonthTimeline(QWidget):
                 x = column * cell_w
                 if value == self.selected:
                     painter.fillRect(QRectF(x + 1, y + 1, cell_w - 2, row_h - 2), QColor("#FFF5EF"))
-                color = "#B1B5BC" if value.month != self.month else ("#C9342C" if column in (0, 6) else "#212124")
-                painter.setPen(QColor(color)); painter.setFont(QFont("Malgun Gothic", 9))
-                painter.drawText(QRectF(x + 7, y + 5, cell_w - 14, 18), Qt.AlignmentFlag.AlignLeft, str(value.day))
+                if value == date.today():
+                    today_badge = QRectF(x + 5, y + 3, 27, 23)
+                    painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor("#F25B24"))
+                    painter.drawRoundedRect(today_badge, 11, 11)
+                    painter.setPen(QColor("#FFFFFF")); painter.setFont(QFont("Malgun Gothic", 9, QFont.Weight.Bold))
+                    painter.drawText(today_badge, Qt.AlignmentFlag.AlignCenter, str(value.day))
+                else:
+                    color = "#B1B5BC" if value.month != self.month else ("#C9342C" if column in (0, 6) else "#212124")
+                    painter.setPen(QColor(color)); painter.setFont(QFont("Malgun Gothic", 9))
+                    painter.drawText(QRectF(x + 7, y + 5, cell_w - 14, 18), Qt.AlignmentFlag.AlignLeft, str(value.day))
             visible, hidden = self._week_segments(week, lane_capacity)
             for lane, task, first, last, is_start, is_end in visible:
                 x = first * cell_w + (4 if is_start else 0)

@@ -16,6 +16,14 @@ def test_create_event_only_selected_and_snapshot_is_stable(db):
     assert service.list_tasks(event_id)[0]["name"] == first_name
 
 
+def test_legacy_inactive_master_remains_available_without_use_checkbox(db):
+    service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY id LIMIT 1")
+    db.execute("UPDATE master_items SET active=0 WHERE id=?", (master["id"],))
+    event_id = service.create_event("사용 열 제거", date(2026, 10, 2), None, [master["id"]])
+    assert db.one("SELECT COUNT(*) count FROM event_tasks WHERE event_id=?", (event_id,))["count"] == 1
+
+
 def test_rebase_auto_preserves_manual_task(db):
     service = EventService(db)
     masters = db.query("SELECT * FROM master_items ORDER BY sort_order LIMIT 2")
@@ -116,7 +124,7 @@ def test_calendar_hides_completed_bars_but_lists_completed_last(db):
     for task in tasks:
         service.update_task(task["id"], planned_start=selected.isoformat(), due_date=selected.isoformat())
     service.update_task(tasks[0]["id"], status="완료")
-    service.update_task(tasks[1]["id"], status="진행중", priority="상")
+    service.update_task(tasks[1]["id"], status="진행중")
 
     bars = service.calendar_range(selected, selected, event_id)
     listed = service.calendar_tasks(selected, event_id)

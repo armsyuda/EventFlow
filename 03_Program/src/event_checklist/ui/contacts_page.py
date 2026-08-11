@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from .dialogs import ContactDialog
-from .widgets import configure_resizable_table, fit_table_to_view
+from .widgets import FastEditableTable, configure_data_table, fit_table_to_view
 
 
 class ContactsPage(QWidget):
@@ -34,11 +34,11 @@ class ContactsPage(QWidget):
         self.refresh()
 
     def _table(self, headers, widths):
-        table = QTableWidget(0, len(headers))
+        table = FastEditableTable(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        configure_resizable_table(table, widths)
+        configure_data_table(table, widths)
         return table
 
     def _companies_tab(self):

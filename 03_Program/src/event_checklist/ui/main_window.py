@@ -6,8 +6,10 @@ import os
 import webbrowser
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QStackedWidget, QVBoxLayout, QWidget, QMainWindow
 
+from ..backup import create_manual_backup, create_rotating_auto_backup
 from ..config import backup_dir
 from .. import __version__
 from ..services import EventService
@@ -73,6 +75,7 @@ class MainWindow(QMainWindow):
         self.dashboard.clear_requested.connect(lambda: self.select_event(None))
         self.events.edit_requested.connect(self.edit_event)
         self.events.changed.connect(self.refresh_dynamic)
+        self.settlement.changed.connect(self.refresh_dynamic)
         self.calendar.changed.connect(self.refresh_dynamic)
         self.settings.contacts_changed.connect(self.refresh_dynamic)
         self.settings.restored.connect(lambda: self.select_event(None))
@@ -80,6 +83,16 @@ class MainWindow(QMainWindow):
         self.available_update: UpdateInfo | None = None
         self.update_check_thread = None
         self.update_download_thread = None
+        self.db.add_history_listener(self._update_history_buttons)
+        self._update_history_buttons(self.db.can_undo, self.db.can_redo)
+        self.undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        self.undo_shortcut.activated.connect(self.undo_last_change)
+        self.redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
+        self.redo_shortcut.activated.connect(self.redo_last_change)
+        self.auto_backup_timer = QTimer(self)
+        self.auto_backup_timer.setInterval(10 * 60 * 1000)
+        self.auto_backup_timer.timeout.connect(self._automatic_backup)
+        self.auto_backup_timer.start()
         self.select_event(None)
         if is_packaged_app() and enable_update_check: QTimer.singleShot(700, self.check_updates)
         else: self.title_bar.set_update_status()
@@ -101,10 +114,79 @@ class MainWindow(QMainWindow):
         version.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(version)
         separator = QFrame(); separator.setFrameShape(QFrame.Shape.HLine); separator.setObjectName("SidebarSeparator")
         layout.addWidget(separator)
+        history_row = QHBoxLayout(); history_row.setSpacing(8)
+        self.undo_button = QPushButton("↶"); self.undo_button.setObjectName("HistoryButton")
+        self.undo_button.setToolTip("되돌리기 · 최대 50단계 (Ctrl+Z)")
+        self.undo_button.setAccessibleName("되돌리기")
+        self.undo_button.clicked.connect(self.undo_last_change)
+        self.redo_button = QPushButton("↷"); self.redo_button.setObjectName("HistoryButton")
+        self.redo_button.setToolTip("앞으로 되돌리기 (Ctrl+Y)")
+        self.redo_button.setAccessibleName("앞으로 되돌리기")
+        self.redo_button.clicked.connect(self.redo_last_change)
+        history_row.addWidget(self.undo_button); history_row.addWidget(self.redo_button)
+        layout.addLayout(history_row)
+        self.save_button = QPushButton("저장")
+        self.save_button.setObjectName("SidebarSaveButton")
+        self.save_button.setToolTip("현재 전체 데이터를 복구용 저장본으로 보관")
+        self.save_button.clicked.connect(self.save_full_backup)
+        layout.addWidget(self.save_button)
         settings = QPushButton(names[4]); settings.setCheckable(True); settings.setProperty("nav", True)
         settings.clicked.connect(lambda _checked=False: self._navigate(4))
         self.nav_group.addButton(settings, 4); self.nav_buttons.append(settings); layout.addWidget(settings)
         return sidebar
+
+    def _update_history_buttons(self, can_undo: bool, can_redo: bool) -> None:
+        self.undo_button.setEnabled(can_undo)
+        self.redo_button.setEnabled(can_redo)
+
+    def save_full_backup(self) -> None:
+        try:
+            result = create_manual_backup(self.db, backup_dir())
+            self.db.mark_backed_up()
+        except Exception as exc:
+            QMessageBox.critical(self, "저장 실패", f"전체 데이터를 저장하지 못했습니다.\n\n{exc}")
+            return
+        QMessageBox.information(self, "저장 완료", f"현재 전체 데이터를 저장했습니다.\n{result}")
+
+    def _automatic_backup(self) -> None:
+        if not self.db.is_dirty:
+            return
+        try:
+            create_rotating_auto_backup(self.db, backup_dir(), keep=10)
+        except Exception:
+            return
+        self.db.mark_backed_up()
+
+    def undo_last_change(self) -> None:
+        if self.db.undo():
+            self._refresh_after_history_change()
+
+    def redo_last_change(self) -> None:
+        if self.db.redo():
+            self._refresh_after_history_change()
+
+    def _refresh_after_history_change(self) -> None:
+        current_index = self.stack.currentIndex()
+        event_id = self.selected_event_id
+        if event_id and not self.service.get_event(event_id):
+            event_id = None
+        self.selected_event_id = event_id
+        event = self.service.get_event(event_id) if event_id else None
+        for index in (1, 2, 3):
+            self.nav_buttons[index].setEnabled(bool(event))
+        self.title_bar.set_event_name(event["name"] if event else None)
+        self.events.event_id = event_id; self.events.invalidate()
+        self.calendar.event_id = event_id
+        self.settlement.event_id = event_id; self.settlement.invalidate()
+        self.dashboard.set_event(event_id)
+        if not event:
+            current_index = 0
+        if current_index == 1: self.events.set_event(event_id)
+        elif current_index == 2: self.calendar.set_event(event_id)
+        elif current_index == 3: self.settlement.set_event(event_id)
+        elif current_index == 4: self.settings.refresh()
+        self.nav_buttons[current_index].setChecked(True)
+        self.stack.setCurrentIndex(current_index)
 
     def _navigate(self, index):
         if index in (1, 2, 3) and not self.selected_event_id:
@@ -132,7 +214,19 @@ class MainWindow(QMainWindow):
             self.events.invalidate()
             self.calendar.event_id = self.selected_event_id
             self.settlement.event_id = self.selected_event_id
+            if self.selected_event_id:
+                QTimer.singleShot(50, lambda eid=self.selected_event_id: self._preload_checklist(eid))
+                QTimer.singleShot(250, lambda eid=self.selected_event_id: self._preload_settlement(eid))
         self.nav_buttons[0].setChecked(True); self.stack.setCurrentIndex(0)
+
+    def _preload_checklist(self, event_id: int) -> None:
+        """Build the selected checklist while the dashboard is visible."""
+        if self.selected_event_id == event_id and self.events._loaded_event_id != event_id:
+            self.events.set_event(event_id)
+
+    def _preload_settlement(self, event_id: int) -> None:
+        if self.selected_event_id == event_id and self.settlement._loaded_event_id != event_id:
+            self.settlement.set_event(event_id)
 
     def _contacts_for_event_dialog(self):
         vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name")
@@ -140,7 +234,7 @@ class MainWindow(QMainWindow):
         return vendors, freelancers
 
     def create_event(self):
-        masters = self.db.query("SELECT * FROM master_items WHERE active=1 ORDER BY sort_order")
+        masters = self.db.query("SELECT * FROM master_items ORDER BY sort_order")
         vendors, freelancers = self._contacts_for_event_dialog()
         dialog = EventDialog(masters, vendors=vendors, freelancers=freelancers, parent=self)
         if not dialog.exec(): return
@@ -162,12 +256,16 @@ class MainWindow(QMainWindow):
                              selected_freelancer_ids=[row["id"] for row in participants["freelancers"]], parent=self)
         if not dialog.exec(): return
         try:
-            self.service.update_event(event_id, **dialog.values(), rebase_auto=True)
-            self.service.set_event_participants(event_id, dialog.selected_vendor_ids(), dialog.selected_freelancer_ids())
+            with self.db.history_action():
+                self.service.update_event(event_id, **dialog.values(), rebase_auto=True)
+                self.service.set_event_participants(event_id, dialog.selected_vendor_ids(), dialog.selected_freelancer_ids())
         except Exception as exc:
             QMessageBox.critical(self, "행사 수정 실패", str(exc)); return
         self.events.invalidate()
+        self.settlement.invalidate()
         self.select_event(event_id)
+        QTimer.singleShot(0, lambda eid=event_id: self._preload_checklist(eid))
+        QTimer.singleShot(30, lambda eid=event_id: self._preload_settlement(eid))
 
     def delete_event(self, event_id):
         event = self.service.get_event(event_id)
@@ -184,7 +282,13 @@ class MainWindow(QMainWindow):
         if not self.selected_event_id: return
         # 보이지 않는 화면까지 즉시 다시 만드는 대신 다음 메뉴 진입 때 최신
         # 데이터를 읽는다. 현재 화면은 각 페이지가 변경 직후 자체 갱신한다.
-        self.events.invalidate()
+        sender = self.sender()
+        if sender is not self.events:
+            self.events.invalidate()
+            QTimer.singleShot(0, lambda eid=self.selected_event_id: self._preload_checklist(eid))
+        if sender is not self.settlement:
+            self.settlement.invalidate()
+            QTimer.singleShot(30, lambda eid=self.selected_event_id: self._preload_settlement(eid))
 
     def refresh_all(self, event_id=None): self.select_event(event_id)
 
@@ -232,6 +336,10 @@ class MainWindow(QMainWindow):
 
     def _update_failed(self, message):
         self.update_progress.close(); QMessageBox.critical(self, "업데이트 실패", message)
+
+    def closeEvent(self, event):
+        self._automatic_backup()
+        super().closeEvent(event)
 
     def nativeEvent(self, event_type, message):
         if event_type == b"windows_generic_MSG" and not self.isMaximized():

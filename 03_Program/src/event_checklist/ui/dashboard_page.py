@@ -103,7 +103,7 @@ class DashboardPage(QWidget):
         progress = round((data.get("progress") or 0) * 100); self.progress_text.setText(f"{progress}% · {data.get('completed') or 0}/{data.get('managed') or 0}개 완료")
         self.progress_bar.setValue(progress); self.urgent_list.clear()
         for task in data["urgent"]:
-            item = QListWidgetItem(f"{d_day_label(int(task['dday']))}    {task['name']}    · {task['status']} · 우선순위 {task['priority']}")
+            item = QListWidgetItem(f"{d_day_label(int(task['dday']))}    {task['name']}    · {task['status']}")
             item.setSizeHint(item.sizeHint().expandedTo(item.sizeHint().__class__(0, 42))); overdue = int(task["dday"]) < 0
             item.setBackground(QColor(TOKENS["critical_weak"] if overdue else TOKENS["warning_weak"])); item.setForeground(QColor(TOKENS["critical"] if overdue else TOKENS["warning"]))
             self.urgent_list.addItem(item)

@@ -6,6 +6,7 @@
 03_Program/src/*.egg-info/
 
 # Build outputs
+/build/
 03_Program/build*/
 03_Program/dist*/
 03_Program/*.spec

@@ -45,12 +45,6 @@ def schedule_for(major: str, minor: str, name: str) -> tuple[str, int, int]:
     return "START", -30, -1
 
 
-def priority_for(major: str, minor: str, name: str) -> str:
-    text = f"{major} {minor} {name}"
-    high_words = ("안전", "허가", "신고", "보험", "전기", "무대", "음향", "소화기")
-    return "상" if any(word in text for word in high_words) else "중"
-
-
 def cleaned(value: str | None) -> str:
     value = (value or "").strip()
     return "" if value in {"81", "#NAME?"} else value
@@ -83,7 +77,6 @@ def build() -> list[dict]:
                 "anchor": anchor,
                 "start_offset": start_offset,
                 "due_offset": due_offset,
-                "priority": priority_for(major, minor, name),
                 "quantity": float(quantity_text) if quantity_text else None,
                 "unit": cleaned(row.get("단위")),
                 "sort_order": index,
@@ -108,4 +101,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

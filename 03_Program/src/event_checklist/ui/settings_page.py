@@ -48,7 +48,7 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(12, 16, 12, 12)
         layout.addWidget(self._section("데이터 저장 위치", str(self.db.path), []))
-        layout.addWidget(self._section("백업", "앱 시작 시 하루 한 번 자동 백업합니다.", [
+        layout.addWidget(self._section("백업", "변경사항은 즉시 저장되며, 10분마다 전체 자동 백업을 만들고 최근 10개를 보관합니다. 수동 백업은 자동으로 삭제되지 않습니다.", [
             ("지금 백업", self.backup_now, True), ("백업에서 복원", self.restore_now, False),
         ]))
         layout.addWidget(self._section("내보내기", "체크리스트와 행사별 정산 요약을 파일로 저장합니다.", [
