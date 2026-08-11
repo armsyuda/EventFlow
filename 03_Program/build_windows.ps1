@@ -3,7 +3,11 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 
 if (-not (Test-Path -LiteralPath $Python)) {
-    throw '먼저 .venv를 만들고 requirements-dev.txt를 설치하세요.'
+    $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $PythonCommand) {
+        throw 'Python을 찾을 수 없습니다. .venv를 만들거나 Python을 PATH에 추가하세요.'
+    }
+    $Python = $PythonCommand.Source
 }
 
 Push-Location $ProjectRoot
