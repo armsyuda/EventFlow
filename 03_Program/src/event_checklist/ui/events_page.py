@@ -12,7 +12,10 @@ from PySide6.QtWidgets import (
 from ..schedule import d_day, d_day_label
 from ..theme import status_color
 from .dialogs import CustomTaskDialog, MasterImportDialog, TaskDetailsDialog
-from .widgets import DirectDateEdit, configure_money_spin, configure_resizable_table, fit_table_to_view
+from .widgets import (
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, DirectDateEdit, configure_grouped_editor_table,
+    configure_money_spin, configure_resizable_table, fit_table_to_view,
+)
 
 STATUSES = ["미착수", "진행중", "확인요청", "완료", "보류", "해당없음"]
 PRIORITIES = ["상", "중", "하"]
@@ -96,6 +99,7 @@ class EventsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        configure_grouped_editor_table(self.table)
         configure_resizable_table(self.table, [58, 130, 210, 112, 88, 125, 125, 125, 72, 65, 135, 140])
         self.table.doubleClicked.connect(self.edit_task_details)
         root.addWidget(self.table, 1)
@@ -212,7 +216,10 @@ class EventsPage(QWidget):
             holder = QWidget(); holder_layout = QHBoxLayout(holder)
             holder_layout.setContentsMargins(0, 0, 0, 0); holder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             holder_layout.addWidget(check); self.table.setCellWidget(row_index, 0, holder)
-            self.table.setItem(row_index, 1, QTableWidgetItem(f"{task['major']} / {task['minor']}"))
+            group = QTableWidgetItem(f"{task['major']} / {task['minor']}")
+            group.setData(GROUP_MAJOR_ROLE, task["major"])
+            group.setData(GROUP_MINOR_ROLE, task["minor"])
+            self.table.setItem(row_index, 1, group)
             name = QTableWidgetItem(task["name"]); name.setData(Qt.ItemDataRole.UserRole, task_id)
             tooltip = task["detail"] or "확인 포인트 없음"
             if task["is_removed"]: tooltip += f"\n제외 사유: {task['removed_reason'] or '미입력'}"
@@ -238,7 +245,7 @@ class EventsPage(QWidget):
             price.editingFinished.connect(lambda tid=task_id, w=price: self._update(tid, unit_price=int(w.value()) or None))
             self.table.setCellWidget(row_index, 10, price)
             self.table.setCellWidget(row_index, 11, self._vendor_combo(vendors, task))
-            self.table.setRowHeight(row_index, 46)
+            self.table.setRowHeight(row_index, 48)
         self.summary.setText(f"{len(tasks)}개 항목" + (" · 제외 기록" if self.removed_toggle.isChecked() else ""))
         self.loading = False
         self.table.blockSignals(False)

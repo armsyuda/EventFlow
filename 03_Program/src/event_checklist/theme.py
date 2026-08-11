@@ -141,6 +141,7 @@ def application_stylesheet() -> str:
     }}
     QTableCornerButton::section {{ background: {c['bg_weak']}; border: none; border-bottom: 1px solid {c['stroke']}; }}
     QTableWidget::item {{ padding: 7px; }}
+    QTableWidget[embeddedEditors="true"]::item {{ padding: 3px 7px; }}
     QProgressBar {{ min-height: 14px; border: none; border-radius: 7px; background: {c['bg_weak']}; text-align: center; }}
     QProgressBar::chunk {{ background: {c['brand']}; border-radius: 7px; }}
     QScrollBar:vertical {{

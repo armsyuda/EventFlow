@@ -7,7 +7,10 @@ from PySide6.QtWidgets import (
 )
 
 from .dialogs import MasterItemDialog
-from .widgets import UnitComboBox, configure_resizable_table, fit_table_to_view
+from .widgets import (
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, UnitComboBox, configure_grouped_editor_table,
+    configure_resizable_table, fit_table_to_view,
+)
 
 
 class MasterPage(QWidget):
@@ -59,6 +62,7 @@ class MasterPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
+        configure_grouped_editor_table(self.table)
         configure_resizable_table(self.table, [60, 92, 116, 160, 240, 76, 88, 120, 90, 136, 126, 116, 88, 88, 90])
         self.table.cellChanged.connect(self._cell_changed)
         root.addWidget(self.table, 1)
@@ -112,6 +116,9 @@ class MasterPage(QWidget):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.ItemDataRole.UserRole, item["id"])
                 self.table.setItem(r, c, cell)
+            group = self.table.item(r, 1)
+            group.setData(GROUP_MAJOR_ROLE, item["major"])
+            group.setData(GROUP_MINOR_ROLE, item["minor"])
             unit = UnitComboBox(item["unit"] or "식")
             unit.value_committed.connect(lambda value, item_id=item["id"]: self._update_field(item_id, "unit", value))
             self.table.setCellWidget(r, 6, unit)
@@ -146,7 +153,7 @@ class MasterPage(QWidget):
                 lambda value, item_id=item["id"]: self._update_field(item_id, "priority", value)
             )
             self.table.setCellWidget(r, 14, priority)
-            self.table.setRowHeight(r, 42)
+            self.table.setRowHeight(r, 48)
         self.count.setText(f"{len(rows)}개 항목")
         self.table.blockSignals(False)
         self.loading = False

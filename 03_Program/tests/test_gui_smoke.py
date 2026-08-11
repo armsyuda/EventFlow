@@ -19,7 +19,11 @@ from event_checklist.ui.main_window import MainWindow
 from event_checklist.ui.events_page import EventsPage
 from event_checklist.ui.master_page import MasterPage
 from event_checklist.ui.month_timeline import MonthTimeline
-from event_checklist.ui.widgets import DirectDateEdit, UnitComboBox, configure_money_spin, configure_quantity_spin
+from event_checklist.theme import application_stylesheet
+from event_checklist.ui.widgets import (
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, DirectDateEdit, UnitComboBox,
+    configure_money_spin, configure_quantity_spin,
+)
 from event_checklist.units import COMMON_UNITS
 from event_checklist.update_service import UpdateInfo
 
@@ -39,7 +43,7 @@ def test_title_bar_shows_current_public_version_and_release_date(tmp_path):
     db = Database(tmp_path / "update-meta.db"); window = MainWindow(db, enable_update_check=False)
     info = UpdateInfo("0.3.3", "v0.3.3", "", "", None, "", "", "2026-08-11T00:41:19Z")
     window._update_check_finished(info)
-    assert "현재 0.3.9" in window.title_bar.update_meta.text()
+    assert "현재 0.3.10" in window.title_bar.update_meta.text()
     assert "공개 0.3.3" in window.title_bar.update_meta.text()
     assert "2026-08-11" in window.title_bar.update_meta.text()
     assert window.title_bar.update_button.text() == "다시 확인"
@@ -183,3 +187,39 @@ def test_checklist_prefetches_assignees_once_and_creates_calendars_lazily(tmp_pa
     assert calls == 1
     assert page.table.findChildren(QCalendarWidget) == []
     page.close(); db.close()
+
+
+def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    previous_style = app.styleSheet()
+    app.setStyleSheet(application_stylesheet())
+    db = Database(tmp_path / "table-layout.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("표 검증 행사", date.today(), date.today() + timedelta(days=5), master_ids)
+    checklist = EventsPage(service, db)
+    master = MasterPage(db)
+    for page in (checklist, master):
+        page.resize(1800, 800)
+        page.show()
+    checklist.set_event(event_id)
+    app.processEvents()
+
+    for table, editor_column in ((checklist.table, 3), (master.table, 6)):
+        cell_rect = table.visualRect(table.model().index(0, editor_column))
+        editor_rect = table.cellWidget(0, editor_column).geometry()
+        assert table.rowHeight(0) == 48
+        assert editor_rect.top() >= cell_rect.top()
+        assert editor_rect.bottom() <= cell_rect.bottom()
+
+        model = table.model()
+        delegate = table.itemDelegate()
+        levels = [delegate.separator_level(model, row) for row in range(1, table.rowCount())]
+        assert 2 in levels  # 대분류 변경: 굵은 주황색 경계
+        assert 1 in levels  # 중분류 변경: 중간 굵기의 회색 경계
+
+    anchor = checklist.table.item(0, 1)
+    assert anchor.data(GROUP_MAJOR_ROLE)
+    assert anchor.data(GROUP_MINOR_ROLE)
+    checklist.close(); master.close(); db.close()
+    app.setStyleSheet(previous_style)
