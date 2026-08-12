@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "event-checklist"
-version = "0.3.25"
+version = "0.3.26"
 description = "Windows event checklist and schedule manager"
 requires-python = ">=3.11"
 dependencies = [

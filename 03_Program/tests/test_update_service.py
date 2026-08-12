@@ -6,7 +6,7 @@ import json
 import urllib.error
 import pytest
 
-from event_checklist import install_service, update_service
+from event_checklist import __version__, install_service, update_service
 
 
 class Response(io.BytesIO):
@@ -15,20 +15,23 @@ class Response(io.BytesIO):
 
 
 def test_new_release_is_detected(monkeypatch):
+    version_parts = [int(part) for part in __version__.split(".")]
+    version_parts[-1] += 1
+    newer_version = ".".join(str(part) for part in version_parts)
     payload = {
-        "tag_name": "v0.3.26",
+        "tag_name": f"v{newer_version}",
         "published_at": "2026-08-12T03:00:00Z",
-        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.26",
+        "html_url": f"https://github.com/armsyuda/EventFlow/releases/tag/v{newer_version}",
         "body": "새 기능",
         "assets": [{
             "name": "EventFlow-Windows.zip",
-            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.26/EventFlow-Windows.zip",
+            "browser_download_url": f"https://github.com/armsyuda/EventFlow/releases/download/v{newer_version}/EventFlow-Windows.zip",
             "digest": "sha256:abc",
         }],
     }
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     info = update_service.check_for_update()
-    assert info and info.version == "0.3.26"
+    assert info and info.version == newer_version
     assert info.asset_name == "EventFlow-Windows.zip"
     assert info.published_at == "2026-08-12T03:00:00Z"
 

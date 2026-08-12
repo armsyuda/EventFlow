@@ -19,11 +19,17 @@ class TitleBar(QFrame):
         super().__init__(window)
         self.window = window
         self.setObjectName("TitleBar"); self.setFixedHeight(44)
-        layout = QHBoxLayout(self); layout.setContentsMargins(12, 0, 0, 0); layout.setSpacing(8)
+        layout = QHBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(8)
+        self.menu_button = QPushButton("☰")
+        self.menu_button.setObjectName("MenuToggleButton")
+        self.menu_button.setFixedSize(48, 44)
+        self.menu_button.setToolTip("좌측 메뉴 숨기기")
+        self.menu_button.setAccessibleName("좌측 메뉴 숨기기")
+        self.menu_button.clicked.connect(self.window.toggle_sidebar)
         icon = QLabel(); icon.setPixmap(app_icon().pixmap(24, 24)); icon.setFixedSize(26, 26)
         title = QLabel("이벤트 플로우"); title.setObjectName("TitleBarName")
         self.event_name = QLabel("행사를 선택하세요"); self.event_name.setObjectName("TitleBarEvent")
-        layout.addWidget(icon); layout.addWidget(title); layout.addWidget(self.event_name); layout.addStretch()
+        layout.addWidget(self.menu_button); layout.addWidget(icon); layout.addWidget(title); layout.addWidget(self.event_name); layout.addStretch()
         self.update_button = QPushButton("업데이트 확인 중")
         self.update_button.setObjectName("UpdateButton")
         self.update_button.setFixedHeight(30)
@@ -43,6 +49,11 @@ class TitleBar(QFrame):
         button.setToolTip(tooltip); button.setFixedSize(46, 44); button.clicked.connect(callback); return button
 
     def set_event_name(self, name): self.event_name.setText(name or "행사를 선택하세요")
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        action = "숨기기" if visible else "보기"
+        self.menu_button.setToolTip(f"좌측 메뉴 {action}")
+        self.menu_button.setAccessibleName(f"좌측 메뉴 {action}")
 
     def set_update_status(self, info=None, update_available: bool = False):
         if info is None:

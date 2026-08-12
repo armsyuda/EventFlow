@@ -67,6 +67,9 @@ def application_stylesheet() -> str:
     }}
     QMainWindow, QWidget#AppRoot {{ background: {c['stroke']}; }}
     QFrame#TitleBar {{ background: {c['bg_layer']}; border-bottom: 1px solid {c['stroke']}; }}
+    QPushButton#MenuToggleButton {{ border: none; border-radius: 0; background: transparent; font-size: 22px; padding: 0; }}
+    QPushButton#MenuToggleButton:hover {{ background: {c['bg_weak']}; color: {c['brand']}; }}
+    QPushButton#MenuToggleButton:pressed {{ background: {c['brand_weak']}; }}
     QLabel#TitleBarName {{ font-weight: 700; font-size: 14px; }}
     QLabel#TitleBarEvent {{ color: {c['fg_muted']}; border-left: 1px solid {c['stroke']}; padding-left: 10px; }}
     QLabel#UpdateMeta {{ color: {c['fg_muted']}; font-size: 12px; padding: 0 4px 0 10px; }}
