@@ -3,11 +3,10 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import os
-import webbrowser
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QStackedWidget, QVBoxLayout, QWidget, QMainWindow
+from PySide6.QtWidgets import QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget, QMainWindow
 
 from ..backup import create_manual_backup, create_rotating_auto_backup
 from ..config import backup_dir
@@ -20,15 +19,16 @@ from .dialogs import EventDialog
 from .events_page import EventsPage
 from .settings_page import SettingsPage
 from .settlement_page import SettlementPage
+from .startup_splash import StartupSplash
 from .title_bar import TitleBar, app_icon
 
 
 class UpdateCheckThread(QThread):
     finished_with_result = Signal(object)
-    failed = Signal()
+    failed = Signal(str)
     def run(self):
         try: self.finished_with_result.emit(fetch_latest_release())
-        except Exception: self.failed.emit()
+        except Exception as exc: self.failed.emit(str(exc))
 
 
 class UpdateDownloadThread(QThread):
@@ -83,6 +83,8 @@ class MainWindow(QMainWindow):
         self.available_update: UpdateInfo | None = None
         self.update_check_thread = None
         self.update_download_thread = None
+        self.update_progress = None
+        self.update_in_progress = False
         self.db.add_history_listener(self._update_history_buttons)
         self._update_history_buttons(self.db.can_undo, self.db.can_redo)
         self.undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
@@ -297,45 +299,64 @@ class MainWindow(QMainWindow):
         self.title_bar.set_update_checking()
         self.update_check_thread = UpdateCheckThread(self)
         self.update_check_thread.finished_with_result.connect(self._update_check_finished)
-        self.update_check_thread.failed.connect(self.title_bar.set_update_error)
+        self.update_check_thread.failed.connect(self._update_check_failed)
         self.update_check_thread.start()
+
+    def _update_check_failed(self, message):
+        self.available_update = None
+        self.title_bar.set_update_error(message)
+        QMessageBox.warning(self, "업데이트 확인 실패", message)
 
     def _update_check_finished(self, info):
         update_available = bool(info and version_tuple(info.version) > version_tuple(__version__))
         self.available_update = info if update_available else None
         self.title_bar.set_update_status(info, update_available)
+        if update_available:
+            QTimer.singleShot(250, self.install_available_update)
 
     def install_available_update(self):
+        if self.update_in_progress:
+            return
         info = self.available_update
         if not info:
             self.check_updates()
             return
         if not info.asset_url:
-            webbrowser.open(info.release_url); return
-        answer = QMessageBox.question(
-            self, "업데이트 설치", f"이벤트 플로우 {info.version} 버전을 내려받아 설치할까요?\n"
-            "설치 중 앱이 종료된 뒤 새 버전으로 다시 실행됩니다. 행사 데이터는 그대로 유지됩니다.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Yes,
-        )
-        if answer != QMessageBox.StandardButton.Yes: return
-        self.update_progress = QProgressDialog("업데이트를 내려받는 중입니다…", "취소", 0, 0, self)
-        self.update_progress.setWindowTitle("이플 업데이트"); self.update_progress.setCancelButton(None)
-        self.update_progress.setWindowModality(Qt.WindowModality.WindowModal); self.update_progress.show()
+            message = (
+                f"새 버전 {info.version}은 공개되어 있지만 자동 업데이트를 설치할 수 없습니다.\n\n"
+                "확인된 원인\nGitHub Release에 EventFlow-Windows.zip 파일이 없습니다.\n\n"
+                "확인 방법\n해당 Release에 Windows ZIP 파일을 첨부한 뒤 다시 확인하세요.\n\n"
+                f"Release 주소: {info.release_url}"
+            )
+            self.title_bar.set_update_error(message)
+            QMessageBox.warning(self, "업데이트 파일 누락", message)
+            return
+        self.update_in_progress = True
+        self.setEnabled(False)
+        self.update_progress = StartupSplash()
+        self.update_progress.setWindowTitle("이플 업데이트")
+        self.update_progress.show()
+        self.update_progress.set_status(f"새 버전 {info.version}을 내려받고 있습니다…")
         self.update_download_thread = UpdateDownloadThread(info, self)
         self.update_download_thread.downloaded.connect(self._update_downloaded)
         self.update_download_thread.failed.connect(self._update_failed)
         self.update_download_thread.start()
 
     def _update_downloaded(self, archive):
-        self.update_progress.close()
+        if self.update_progress:
+            self.update_progress.set_status("설치를 준비하고 있습니다. 잠시 후 자동으로 다시 시작합니다…")
         try: launch_installer(archive, self.available_update, os.getpid())
         except Exception as exc:
-            QMessageBox.critical(self, "업데이트 실패", str(exc)); return
-        QApplication.quit()
+            self._update_failed(str(exc)); return
+        QTimer.singleShot(700, QApplication.quit)
 
     def _update_failed(self, message):
-        self.update_progress.close(); QMessageBox.critical(self, "업데이트 실패", message)
+        if self.update_progress:
+            self.update_progress.close()
+            self.update_progress = None
+        self.update_in_progress = False
+        self.setEnabled(True)
+        QMessageBox.critical(self, "업데이트 실패", message)
 
     def closeEvent(self, event):
         self._automatic_backup()

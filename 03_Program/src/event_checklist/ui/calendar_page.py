@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import QCalendarWidget, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget
 
-from ..schedule import d_day, d_day_label
 from ..theme import status_color
 from .month_timeline import MonthTimeline
 
@@ -49,8 +48,7 @@ class CalendarTaskCard(QFrame):
                   (("#B54708", "#FFF2D6") if due_today else status_color(task["status"])))
         badge = QLabel(badge_text); badge.setObjectName("StatusBadge"); badge.setStyleSheet(f"color:{fg};background:{bg};")
         top.addWidget(name, 1); top.addWidget(badge); layout.addLayout(top)
-        suffix = "완료" if task["status"] == "완료" else d_day_label(d_day(due))
-        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {suffix}")
+        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {task['status']}")
         meta.setObjectName("Muted"); layout.addWidget(meta)
         if due_today:
             due_guide = QLabel("오늘까지 완료하거나 아래에서 마감일을 연장하세요.")

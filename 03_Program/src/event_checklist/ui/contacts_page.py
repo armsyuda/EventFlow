@@ -126,8 +126,8 @@ class ContactsPage(QWidget):
                 "INSERT INTO contacts(kind,name,phone,role_note,company_id) VALUES (?,?,?,?,?)",
                 (kind, name, phone, note, company_id),
             )
-        except Exception:
-            QMessageBox.warning(self, "추가 실패", "같은 이름이 이미 등록되어 있습니다.")
+        except Exception as exc:
+            QMessageBox.warning(self, "추가 실패", f"연락처를 추가하지 못했습니다.\n\n{exc}")
             return
         self.refresh()
         self.changed.emit()

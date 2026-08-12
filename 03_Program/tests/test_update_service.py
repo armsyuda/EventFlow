@@ -16,19 +16,19 @@ class Response(io.BytesIO):
 
 def test_new_release_is_detected(monkeypatch):
     payload = {
-        "tag_name": "v0.3.24",
+        "tag_name": "v0.3.26",
         "published_at": "2026-08-12T03:00:00Z",
-        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.24",
+        "html_url": "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.26",
         "body": "새 기능",
         "assets": [{
             "name": "EventFlow-Windows.zip",
-            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.24/EventFlow-Windows.zip",
+            "browser_download_url": "https://github.com/armsyuda/EventFlow/releases/download/v0.3.26/EventFlow-Windows.zip",
             "digest": "sha256:abc",
         }],
     }
     monkeypatch.setattr(update_service.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode()))
     info = update_service.check_for_update()
-    assert info and info.version == "0.3.24"
+    assert info and info.version == "0.3.26"
     assert info.asset_name == "EventFlow-Windows.zip"
     assert info.published_at == "2026-08-12T03:00:00Z"
 
@@ -66,8 +66,21 @@ def test_update_check_reports_network_or_private_repository(monkeypatch):
         update_service.urllib.request, "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.HTTPError("", 404, "", {}, None)),
     )
-    with pytest.raises(update_service.UpdateCheckError):
+    with pytest.raises(update_service.UpdateCheckError, match="HTTP 404") as error:
         update_service.check_for_update()
+    assert "공개된 최신 릴리스" in str(error.value)
+    assert "확인 방법" in str(error.value)
+
+
+def test_update_check_reports_dns_failure(monkeypatch):
+    failure = urllib.error.URLError(__import__("socket").gaierror(11001, "host not found"))
+    monkeypatch.setattr(
+        update_service.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    with pytest.raises(update_service.UpdateCheckError, match="DNS") as error:
+        update_service.fetch_latest_release()
+    assert "github.com" in str(error.value)
 
 
 def test_fixed_install_location_uses_local_appdata(monkeypatch, tmp_path):
@@ -102,6 +115,14 @@ def test_update_helper_requires_fixed_install_and_health_check(monkeypatch, tmp_
     assert "Add-Content -LiteralPath $log" in script
     assert script.index("try {") < script.index("Expand-Archive")
     assert "RECOVERY relaunch previous application" in script
+    assert "--restarting-after-update" in script
+    assert ".eventflow-installed" in script
+    assert "Set-UpdateState 'INSTALLING'" in script
+    assert "Set-UpdateState 'RESTARTING'" in script
+    indicator = (archive.parent / "indicator-0.3.4.ps1").read_text(encoding="utf-8-sig")
+    assert "이플 업데이트" in indicator
+    assert "새 버전 0.3.4" in indicator
+    assert "$script:terminalTicks" in indicator
     assert launched["args"][0] == "powershell.exe"
     assert launched["kwargs"]["cwd"] == str(archive.parent)
 
@@ -121,4 +142,16 @@ def test_first_packaged_run_creates_fixed_install_helper(monkeypatch, tmp_path):
     script = (tmp_path / "local" / "EventCheckList" / "updates" / "install-eventflow.ps1").read_text(encoding="utf-8-sig")
     assert str(tmp_path / "local" / "Programs" / "EventFlow") in script
     assert "이벤트 플로우.lnk" in script
+    assert ".eventflow-installed" in script
     assert launched["args"][0] == "powershell.exe"
+
+
+def test_custom_installer_location_is_recognized(monkeypatch, tmp_path):
+    install = tmp_path / "My EventFlow"
+    executable = install / "EventFlow.exe"
+    install.mkdir()
+    executable.write_bytes(b"exe")
+    (install / install_service.INSTALL_MARKER_NAME).write_text("installed", encoding="ascii")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+    assert install_service.is_fixed_installation(executable)

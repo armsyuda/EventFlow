@@ -5,13 +5,13 @@ import os
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 
 class Database:
@@ -77,6 +77,7 @@ class Database:
                 budget REAL,
                 budget_tax_mode TEXT NOT NULL DEFAULT 'UNSET'
                     CHECK(budget_tax_mode IN ('INCLUDED','EXCLUDED','UNSET')),
+                pm_vendor_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CHECK(end_date IS NULL OR end_date >= start_date)
@@ -88,9 +89,6 @@ class Database:
                 minor TEXT NOT NULL,
                 name TEXT NOT NULL,
                 detail TEXT NOT NULL DEFAULT '',
-                anchor TEXT NOT NULL CHECK(anchor IN ('START', 'END')),
-                start_offset INTEGER NOT NULL,
-                due_offset INTEGER NOT NULL,
                 priority TEXT NOT NULL DEFAULT '중' CHECK(priority IN ('상', '중', '하')),
                 quantity REAL,
                 unit TEXT NOT NULL DEFAULT '',
@@ -100,8 +98,7 @@ class Database:
                 default_vendor_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
                 default_assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
                 sort_order INTEGER NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1,
-                CHECK(start_offset <= due_offset)
+                active INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS contacts (
@@ -129,13 +126,10 @@ class Database:
                 quantity REAL,
                 unit TEXT NOT NULL DEFAULT '',
                 assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                pm_assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
                 vendor_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
-                planned_start TEXT NOT NULL,
-                due_date TEXT NOT NULL,
-                schedule_mode TEXT NOT NULL DEFAULT 'auto' CHECK(schedule_mode IN ('auto','manual')),
-                anchor TEXT NOT NULL CHECK(anchor IN ('START','END')),
-                start_offset INTEGER NOT NULL,
-                due_offset INTEGER NOT NULL,
+                planned_start TEXT,
+                due_date TEXT,
                 cost REAL,
                 unit_price INTEGER,
                 vat_type TEXT NOT NULL DEFAULT 'TAXABLE'
@@ -147,7 +141,7 @@ class Database:
                 sort_order INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                CHECK(planned_start <= due_date)
+                CHECK(planned_start IS NULL OR due_date IS NULL OR planned_start <= due_date)
             );
 
             CREATE TABLE IF NOT EXISTS settings (
@@ -170,7 +164,6 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_tasks_event ON event_tasks(event_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_due ON event_tasks(due_date);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON event_tasks(status);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_kind_name ON contacts(kind, name);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_event_master_unique
                 ON event_tasks(event_id, master_item_id) WHERE master_item_id IS NOT NULL;
             """
@@ -183,9 +176,10 @@ class Database:
         elif row["version"] > SCHEMA_VERSION:
             raise RuntimeError(f"지원하지 않는 DB 버전: {row['version']}")
         self.conn.execute("DROP INDEX IF EXISTS idx_contacts_kind_name")
+        self.conn.execute("DROP INDEX IF EXISTS idx_contacts_company_name")
         self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_company_name "
-            "ON contacts(kind,name,COALESCE(company_id,0))"
+            "CREATE INDEX IF NOT EXISTS idx_contacts_kind_name_lookup "
+            "ON contacts(kind,name)"
         )
         task_columns = {column["name"] for column in self.conn.execute("PRAGMA table_info(event_tasks)")}
         if "removed_reason" not in task_columns:
@@ -212,31 +206,8 @@ class Database:
             )
             version = 2
         if version == 2:
-            # v2까지는 start_date를 행사 당일로 해석해 준비 시작일보다 앞선
-            # 일정이 생성됐다. 새 의미(준비 시작일~최종 행사일)에 맞춰 자동
-            # 일정만 다시 계산하고, 사용자가 고친 수동 일정은 보존한다.
-            from .schedule import calculate_schedule
-
-            events = self.conn.execute("SELECT id,start_date,end_date FROM events").fetchall()
-            for event in events:
-                event_start = date.fromisoformat(event["start_date"])
-                event_end = (
-                    date.fromisoformat(event["end_date"])
-                    if event["end_date"] else None
-                )
-                tasks = self.conn.execute(
-                    "SELECT id,anchor,start_offset,due_offset FROM event_tasks "
-                    "WHERE event_id=? AND schedule_mode='auto'",
-                    (event["id"],),
-                ).fetchall()
-                for task in tasks:
-                    schedule = calculate_schedule(
-                        event_start, event_end, task["anchor"], task["start_offset"], task["due_offset"]
-                    )
-                    self.conn.execute(
-                        "UPDATE event_tasks SET planned_start=?,due_date=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                        (schedule.planned_start.isoformat(), schedule.due_date.isoformat(), task["id"]),
-                    )
+            # 과거 자동 일정도 이전 과정에서 다시 계산하지 않는다.
+            # 저장되어 있던 날짜는 그대로 보존하고 v7에서 자동 일정 열만 제거한다.
             version = 3
         if version == 3:
             def add_column(table: str, column: str, declaration: str) -> None:
@@ -284,6 +255,87 @@ class Database:
                    WHERE TRIM(COALESCE(unit,''))='' AND master_item_id IS NOT NULL"""
             )
             version = 5
+        if version == 5:
+            event_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(events)")}
+            if "pm_vendor_id" not in event_columns:
+                self.conn.execute(
+                    "ALTER TABLE events ADD COLUMN pm_vendor_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL"
+                )
+            task_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(event_tasks)")}
+            if "pm_assignee_id" not in task_columns:
+                self.conn.execute(
+                    "ALTER TABLE event_tasks ADD COLUMN pm_assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL"
+                )
+            version = 6
+        if version == 6:
+            # 기존 자동 일정 열을 제거하고 업무 날짜를 선택 입력값으로 바꾼다.
+            # 기존 행사에 이미 저장된 날짜는 그대로 옮겨 사용자 데이터를 보존한다.
+            self.conn.executescript(
+                """
+                PRAGMA foreign_keys=OFF;
+                PRAGMA legacy_alter_table=ON;
+                ALTER TABLE event_tasks RENAME TO event_tasks_pre_v7;
+                CREATE TABLE event_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    master_item_id INTEGER REFERENCES master_items(id) ON DELETE SET NULL,
+                    major TEXT NOT NULL, minor TEXT NOT NULL, name TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '', required INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT '미착수'
+                        CHECK(status IN ('미착수','진행중','확인요청','완료','보류','해당없음')),
+                    priority TEXT NOT NULL DEFAULT '중' CHECK(priority IN ('상','중','하')),
+                    quantity REAL, unit TEXT NOT NULL DEFAULT '',
+                    assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                    pm_assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                    vendor_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                    planned_start TEXT, due_date TEXT, cost REAL, unit_price INTEGER,
+                    vat_type TEXT NOT NULL DEFAULT 'TAXABLE' CHECK(vat_type IN ('TAXABLE','EXEMPT')),
+                    is_removed INTEGER NOT NULL DEFAULT 0, removed_reason TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '', completed_at TEXT, sort_order INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CHECK(planned_start IS NULL OR due_date IS NULL OR planned_start <= due_date)
+                );
+                INSERT INTO event_tasks(
+                    id,event_id,master_item_id,major,minor,name,detail,required,status,priority,
+                    quantity,unit,assignee_id,pm_assignee_id,vendor_id,planned_start,due_date,cost,
+                    unit_price,vat_type,is_removed,removed_reason,note,completed_at,sort_order,created_at,updated_at
+                ) SELECT
+                    id,event_id,master_item_id,major,minor,name,detail,required,status,priority,
+                    quantity,unit,assignee_id,pm_assignee_id,vendor_id,planned_start,due_date,cost,
+                    unit_price,vat_type,is_removed,removed_reason,note,completed_at,sort_order,created_at,updated_at
+                  FROM event_tasks_pre_v7;
+                DROP TABLE event_tasks_pre_v7;
+
+                ALTER TABLE master_items RENAME TO master_items_pre_v7;
+                CREATE TABLE master_items (
+                    id INTEGER PRIMARY KEY, major TEXT NOT NULL, minor TEXT NOT NULL, name TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT '중' CHECK(priority IN ('상','중','하')),
+                    quantity REAL, unit TEXT NOT NULL DEFAULT '', base_unit_price INTEGER,
+                    default_vat_type TEXT NOT NULL DEFAULT 'TAXABLE' CHECK(default_vat_type IN ('TAXABLE','EXEMPT')),
+                    default_vendor_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                    default_assignee_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+                    sort_order INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO master_items(
+                    id,major,minor,name,detail,priority,quantity,unit,base_unit_price,default_vat_type,
+                    default_vendor_id,default_assignee_id,sort_order,active
+                ) SELECT
+                    id,major,minor,name,detail,priority,quantity,unit,base_unit_price,default_vat_type,
+                    default_vendor_id,default_assignee_id,sort_order,active
+                  FROM master_items_pre_v7;
+                DROP TABLE master_items_pre_v7;
+                CREATE INDEX idx_tasks_event ON event_tasks(event_id);
+                CREATE INDEX idx_tasks_due ON event_tasks(due_date);
+                CREATE INDEX idx_tasks_status ON event_tasks(status);
+                CREATE UNIQUE INDEX idx_event_master_unique
+                    ON event_tasks(event_id, master_item_id) WHERE master_item_id IS NOT NULL;
+                PRAGMA legacy_alter_table=OFF;
+                PRAGMA foreign_keys=ON;
+                """
+            )
+            version = 7
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"DB 마이그레이션 경로가 없습니다: {from_version} → {SCHEMA_VERSION}")
         self.conn.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))
@@ -301,11 +353,9 @@ class Database:
         self.conn.executemany(
             """
             INSERT INTO master_items(
-                id, major, minor, name, detail, anchor, start_offset, due_offset,
-                quantity, unit, sort_order, active
+                id, major, minor, name, detail, quantity, unit, sort_order, active
             ) VALUES (
-                :id, :major, :minor, :name, :detail, :anchor, :start_offset, :due_offset,
-                :quantity, :unit, :sort_order, :active
+                :id, :major, :minor, :name, :detail, :quantity, :unit, :sort_order, :active
             )
             """,
             items,

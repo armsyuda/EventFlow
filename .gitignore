@@ -11,6 +11,8 @@
 03_Program/dist*/
 03_Program/*.spec
 03_Program/ui-*.png
+03_Program/EventFlow_Current/
+03_Program/EventFlow_Installer/
 
 # Local data and temporary files
 *.db

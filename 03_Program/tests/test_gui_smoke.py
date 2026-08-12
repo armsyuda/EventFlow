@@ -11,13 +11,14 @@ from PySide6.QtWidgets import QApplication, QCalendarWidget, QLineEdit, QListWid
 from PySide6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox
 from PySide6.QtTest import QTest
 
+from event_checklist import __version__
 from event_checklist.database import Database
 from event_checklist.choices import load_master_choice_catalog
 from event_checklist.services import EventService
 from event_checklist.ui.calendar_page import CalendarPage, CalendarTaskCard
 from event_checklist.ui.contacts_page import ContactsPage
 from event_checklist.ui.dashboard_page import EventCard
-from event_checklist.ui.dialogs import EventDialog, MasterItemDialog
+from event_checklist.ui.dialogs import CustomTaskDialog, EventDialog, MasterItemDialog
 from event_checklist.ui.main_window import MainWindow
 from event_checklist.ui.events_page import EventsPage, STATUSES
 from event_checklist.ui.master_page import MasterPage
@@ -48,7 +49,7 @@ def test_title_bar_shows_current_public_version_and_release_date(tmp_path):
     db = Database(tmp_path / "update-meta.db"); window = MainWindow(db, enable_update_check=False)
     info = UpdateInfo("0.3.3", "v0.3.3", "", "", None, "", "", "2026-08-11T00:41:19Z")
     window._update_check_finished(info)
-    assert "현재 0.3.23" in window.title_bar.update_meta.text()
+    assert f"현재 {__version__}" in window.title_bar.update_meta.text()
     assert "공개 0.3.3" in window.title_bar.update_meta.text()
     assert "2026-08-11" in window.title_bar.update_meta.text()
     assert window.title_bar.update_button.text() == "다시 확인"
@@ -62,6 +63,24 @@ def test_new_event_dialog_builds_without_native_crash(tmp_path):
     dialog = EventDialog(db.query("SELECT * FROM master_items WHERE active=1 ORDER BY sort_order"))
     assert dialog.tree.topLevelItemCount() == 5
     assert len(dialog.selected_ids()) == 120
+    dialog.close(); db.close()
+
+
+def test_direct_task_dialog_uses_detail_label_and_starts_without_dates(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "custom-task-dialog.db"); service = EventService(db)
+    event_id = service.create_event(
+        "직접 추가 창", date.today(), date.today() + timedelta(days=30),
+        [db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")["id"]],
+    )
+    dialog = CustomTaskDialog(
+        service.get_event(event_id), category_choices=load_master_choice_catalog(db),
+    )
+    labels = {dialog.layout().itemAt(0).layout().labelForField(dialog.detail).text()}
+    assert labels == {"세부내용"}
+    dialog.name.setText("새 업무")
+    values = dialog.values()
+    assert values["planned_start"] is None and values["due_date"] is None
     dialog.close(); db.close()
 
 
@@ -183,27 +202,162 @@ def test_calendar_postpone_actions_only_appear_for_today_deadline():
     assert "날짜 선택" not in labels
 
 
-def test_checklist_prefetches_assignees_once_and_creates_calendars_lazily(tmp_path, monkeypatch):
+def test_checklist_loads_new_global_contacts_and_creates_calendars_lazily(tmp_path):
     app = QApplication.instance() or QApplication([])
     db = Database(tmp_path / "checklist-performance.db")
     service = EventService(db)
     master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
     event_id = service.create_event("성능 행사", date.today(), date.today() + timedelta(days=5), master_ids)
-    calls = 0
-    original = service.available_assignees
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(service, "available_assignees", counted)
+    vendor_id = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','새 업체')").lastrowid
+    person_id = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','새 담당자',?)", (vendor_id,)
+    ).lastrowid
     page = EventsPage(service, db)
     page.set_event(event_id)
     assert page.table.rowCount() == 120
-    assert calls == 1
+    assert any(row["id"] == vendor_id for row in page._vendors)
+    assert any(row["id"] == person_id for row in page._all_assignees)
     assert page.table.findChildren(QCalendarWidget) == []
     page.close(); db.close()
+
+
+def test_settings_contacts_refresh_checklist_choices_and_vendor_precedes_assignee(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "contact-refresh.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("연락처 즉시 반영", date.today(), date.today() + timedelta(days=3), master_ids)
+    window = MainWindow(db, enable_update_check=False)
+    window.select_event(event_id)
+    QTest.qWait(80)
+
+    first_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','첫 업체')").lastrowid
+    second_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','둘째 업체')").lastrowid
+    first_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','같은 이름',?)", (first_vendor,)
+    ).lastrowid
+    second_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','같은 이름',?)", (second_vendor,)
+    ).lastrowid
+    window.settings.contacts_changed.emit()
+    QTest.qWait(100)
+
+    assert window.events.table.horizontalHeaderItem(4).text() == "세부내용"
+    assert window.events.table.horizontalHeaderItem(8).text() == "담당자(PM)"
+    assert window.events.table.horizontalHeaderItem(9).text() == "업체"
+    assert window.events.table.horizontalHeaderItem(10).text() == "업체담당자"
+    assert window.events.table.horizontalHeaderItem(11).text() == "업체담당자 전화번호"
+    assert {first_vendor, second_vendor} <= {row["id"] for row in window.events._vendors}
+    assert {first_person, second_person} <= {row["id"] for row in window.events._all_assignees}
+    labels = {window.events._assignee_label(row) for row in window.events._all_assignees if row["name"] == "같은 이름"}
+    assert labels == {"같은 이름 · 첫 업체", "같은 이름 · 둘째 업체"}
+
+    window.events._open_cell_editor(0, 9)
+    editor = window.events.table.cellWidget(0, 9)
+    assert editor.findData(first_vendor) >= 0 and editor.findData(second_vendor) >= 0
+    window.events.table.close_cell_editor()
+    window.close(); db.close()
+
+
+def test_title_bar_keeps_detailed_update_failure_reason(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "update-error.db"); window = MainWindow(db, enable_update_check=False)
+    message = "확인된 원인\nGitHub 응답 시간이 초과되었습니다.\n\n확인 방법\n인터넷 연결을 확인하세요."
+    window.title_bar.set_update_error(message)
+    assert window.title_bar.update_button.text() == "다시 확인"
+    assert window.title_bar.update_button.toolTip() == message
+    assert "확인 실패" in window.title_bar.update_meta.text()
+    window.close(); db.close()
+
+
+def test_missing_release_zip_explains_why_update_cannot_start(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "missing-update-zip.db"); window = MainWindow(db, enable_update_check=False)
+    window.available_update = UpdateInfo(
+        "0.3.25", "v0.3.25", "", "", None,
+        "https://github.com/armsyuda/EventFlow/releases/tag/v0.3.25", "", "2026-08-12T00:00:00Z",
+    )
+    shown = {}
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, message: shown.update(title=title, message=message))
+    window.install_available_update()
+    assert shown["title"] == "업데이트 파일 누락"
+    assert "EventFlow-Windows.zip" in shown["message"]
+    assert "Release 주소" in shown["message"]
+    window.close(); db.close()
+
+
+def test_pm_and_vendor_contacts_are_filtered_and_phone_is_shown(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "pm-contacts.db"); service = EventService(db)
+    pm_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','PM 업체')").lastrowid
+    work_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','실행 업체')").lastrowid
+    other_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','다른 업체')").lastrowid
+    pm_person = db.execute(
+        "INSERT INTO contacts(kind,name,phone,company_id) VALUES ('PERSON','PM 담당','010-1111-2222',?)", (pm_vendor,)
+    ).lastrowid
+    work_person = db.execute(
+        "INSERT INTO contacts(kind,name,phone,company_id) VALUES ('PERSON','업체 담당','010-3333-4444',?)", (work_vendor,)
+    ).lastrowid
+    other_person = db.execute(
+        "INSERT INTO contacts(kind,name,phone,company_id) VALUES ('PERSON','다른 담당','010-5555-6666',?)", (other_vendor,)
+    ).lastrowid
+    master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
+    event_id = service.create_event(
+        "PM 선택", date.today(), date.today() + timedelta(days=2), [master["id"]], pm_vendor_id=pm_vendor,
+    )
+    page = EventsPage(service, db); page.set_event(event_id)
+
+    page._open_cell_editor(0, 8)
+    pm_editor = page.table.cellWidget(0, 8)
+    assert pm_editor.findData(pm_person) >= 0
+    assert pm_editor.findData(work_person) < 0 and pm_editor.findData(other_person) < 0
+    page.table.close_cell_editor()
+
+    vendor_choices = [("미지정", None)] + [(row["name"], row["id"]) for row in page._vendors]
+    page._commit_vendor(0, page._current_tasks[0], work_vendor, vendor_choices)
+    page._open_cell_editor(0, 10)
+    contact_editor = page.table.cellWidget(0, 10)
+    assert contact_editor.findData(work_person) >= 0
+    assert contact_editor.findData(pm_person) < 0 and contact_editor.findData(other_person) < 0
+    page.table.close_cell_editor()
+    contact_choices = [("미지정", None)] + [(page._assignee_label(row), row["id"])
+                                             for row in page._assignees_by_vendor[work_vendor]]
+    page._commit_vendor_contact(0, page._current_tasks[0], work_person, contact_choices)
+    assert page.table.item(0, 11).text() == "010-3333-4444"
+    page.close(); db.close()
+
+
+def test_master_has_no_dday_columns_and_settlement_uses_all_registered_vendors(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "manual-dates-settlement-vendors.db"); service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
+    event_id = service.create_event("직접 일정", date.today(), date.today() + timedelta(days=2), [master["id"]])
+    master_page = MasterPage(db)
+    headers = [master_page.table.horizontalHeaderItem(index).text() for index in range(master_page.table.columnCount())]
+    assert "일정 기준" not in headers and "시작 D±" not in headers and "마감 D±" not in headers
+    checklist = EventsPage(service, db); checklist.set_event(event_id)
+    assert checklist.table.item(0, 4).text() == db.one("SELECT detail FROM master_items WHERE id=?", (master["id"],))["detail"]
+    assert checklist.table.item(0, 6).text() == "미입력"
+    assert checklist.table.item(0, 7).text() == "미입력"
+    checklist._open_cell_editor(0, 6)
+    assert checklist.table.cellWidget(0, 6) is None
+    assert checklist.table._date_popup is not None
+    assert "날짜 비우기" in {button.text() for button in checklist.table._date_popup.findChildren(QPushButton)}
+    checklist.table.close_cell_editor()
+    assert checklist._commit_date(0, checklist._current_tasks[0], 6, "planned_start", "2026-08-20") is None
+    assert checklist.table.item(0, 6).text() == "2026-08-20"
+    assert checklist._commit_date(0, checklist._current_tasks[0], 6, "planned_start", None) is None
+    assert checklist.table.item(0, 6).text() == "미입력"
+
+    new_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','정산 즉시 업체')").lastrowid
+    settlement = SettlementPage(service, db); settlement.set_event(event_id)
+    assert new_vendor in {row["id"] for row in settlement._vendors}
+    task_row = next(iter(settlement._task_rows.values()))
+    settlement._open_cell_editor(task_row, 10)
+    editor = settlement.table.cellWidget(task_row, 10)
+    assert editor.findData(new_vendor) >= 0
+    settlement.table.close_cell_editor()
+    settlement.close(); checklist.close(); master_page.close(); db.close()
 
 
 def test_merged_master_category_edit_renames_the_whole_group(tmp_path):
@@ -227,15 +381,15 @@ def test_checklist_status_choice_updates_database_and_keeps_order_number(tmp_pat
     page = EventsPage(service, db); page.set_event(event_id)
     assert isinstance(page._current_tasks[0], dict)
     task_id = int(page._current_tasks[0]["id"])
-    page._open_cell_editor(0, 4)
-    editor = page.table.cellWidget(0, 4)
+    page._open_cell_editor(0, 5)
+    editor = page.table.cellWidget(0, 5)
     target = STATUSES.index("완료")
     editor.setCurrentIndex(target); editor.activated.emit(target); app.processEvents()
     assert db.one("SELECT status FROM event_tasks WHERE id=?", (task_id,))["status"] == "완료"
-    assert page.table.item(0, 4).text() == "완료"
+    assert page.table.item(0, 5).text() == "완료"
     assert page.table.item(0, 0).text() == "1"
     assert not (page.table.item(0, 0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
-    assert page.table.cellWidget(0, 4) is None
+    assert page.table.cellWidget(0, 5) is None
     del editor
     page.close(); db.close()
 
@@ -290,13 +444,14 @@ def test_import_master_explains_when_every_master_is_already_in_event(tmp_path, 
     page.close(); db.close()
 
 
-def test_checklist_excludes_immediately_and_restores_from_removed_view(tmp_path):
+def test_checklist_excludes_immediately_and_restores_from_removed_view(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     db = Database(tmp_path / "exclude-restore.db"); service = EventService(db)
     master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
     event_id = service.create_event("제외 복원", date.today(), None, [master["id"]])
     page = EventsPage(service, db); page.set_event(event_id)
     task_id = int(page._current_tasks[0]["id"])
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
 
     page.table.selectRow(0)
     page.remove_selected()
@@ -392,7 +547,7 @@ def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries
     checklist.set_event(event_id)
     app.processEvents()
 
-    for table, editor_column in ((checklist.table, 4), (master.table, 6)):
+    for table, editor_column in ((checklist.table, 5), (master.table, 6)):
         cell_rect = table.visualRect(table.model().index(0, editor_column))
         assert table.rowHeight(0) == 48
         assert table.cellWidget(0, editor_column) is None
@@ -492,7 +647,9 @@ def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
     assert settlement.table.rowSpan(0, 0) > 1
     assert settlement.table.rowSpan(0, 1) > 1
     assert pages[0].table.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignHCenter
-    assert pages[0].table.item(0, 10).textAlignment() & Qt.AlignmentFlag.AlignRight
+    assert pages[0].table.columnCount() == 12
+    assert pages[0].table.horizontalHeaderItem(4).text() == "세부내용"
+    assert pages[0].table.horizontalHeaderItem(11).text() == "업체담당자 전화번호"
     assert pages[1].table.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignHCenter
     assert pages[1].table.item(0, 7).textAlignment() & Qt.AlignmentFlag.AlignRight
     assert pages[2].table.item(0, 2).textAlignment() & Qt.AlignmentFlag.AlignHCenter

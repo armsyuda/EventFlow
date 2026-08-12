@@ -20,6 +20,7 @@ def _arguments(argv=None):
     parser.add_argument("--screenshot", help="검수용으로 창 이미지를 저장한 뒤 종료")
     parser.add_argument("--page", type=int, choices=range(0, 5), default=0, help="검수용 시작 화면 번호")
     parser.add_argument("--update-health-file", help=argparse.SUPPRESS)
+    parser.add_argument("--restarting-after-update", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -49,7 +50,10 @@ def main(argv=None) -> int:
     splash = StartupSplash() if show_splash else None
     if splash is not None:
         splash.show()
-        splash.set_status("실행 환경을 확인하고 있습니다…")
+        splash.set_status(
+            "새 버전으로 다시 시작하고 있습니다…"
+            if args.restarting_after_update else "실행 환경을 확인하고 있습니다…"
+        )
 
     # Keep the first paint lightweight. These modules pull in every page and
     # spreadsheet/export dependency, so load them only after the splash exists.
