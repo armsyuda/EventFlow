@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
         outer_layout = QVBoxLayout(outer); outer_layout.setContentsMargins(1, 1, 1, 1); outer_layout.setSpacing(0)
         self.title_bar = TitleBar(self); outer_layout.addWidget(self.title_bar)
         content = QWidget(); content_layout = QHBoxLayout(content); content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
-        content_layout.addWidget(self._build_sidebar())
+        self.sidebar = self._build_sidebar(); content_layout.addWidget(self.sidebar)
         self.stack = QStackedWidget(); content_layout.addWidget(self.stack, 1)
         outer_layout.addWidget(content, 1); self.setCentralWidget(outer)
 
@@ -98,6 +98,13 @@ class MainWindow(QMainWindow):
         self.select_event(None)
         if is_packaged_app() and enable_update_check: QTimer.singleShot(700, self.check_updates)
         else: self.title_bar.set_update_status()
+
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar_visible(not self.sidebar.isVisible())
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        self.sidebar.setVisible(visible)
+        self.title_bar.set_sidebar_visible(visible)
 
     def _build_sidebar(self):
         sidebar = QFrame(); sidebar.setObjectName("Sidebar"); sidebar.setFixedWidth(212)

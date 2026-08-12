@@ -1,3 +1,3 @@
 """Event Flow desktop application."""
 
-__version__ = "0.3.25"
+__version__ = "0.3.26"

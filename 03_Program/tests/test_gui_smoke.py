@@ -44,6 +44,27 @@ def test_main_window_initializes(tmp_path):
     window.close(); db.close()
 
 
+def test_hamburger_button_toggles_sidebar_and_expands_content(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "sidebar-toggle.db"); window = MainWindow(db, enable_update_check=False)
+    window.resize(1440, 900); window.show(); app.processEvents()
+    sidebar_width = window.sidebar.width()
+    initial_content_width = window.stack.width()
+    assert sidebar_width == 212
+    assert window.sidebar.isVisible()
+    assert window.title_bar.menu_button.accessibleName() == "좌측 메뉴 숨기기"
+
+    window.title_bar.menu_button.click(); app.processEvents()
+    assert not window.sidebar.isVisible()
+    assert window.stack.width() >= initial_content_width + sidebar_width - 2
+    assert window.title_bar.menu_button.accessibleName() == "좌측 메뉴 보기"
+
+    window.title_bar.menu_button.click(); app.processEvents()
+    assert window.sidebar.isVisible()
+    assert window.stack.width() == initial_content_width
+    window.close(); db.close()
+
+
 def test_title_bar_shows_current_public_version_and_release_date(tmp_path):
     app = QApplication.instance() or QApplication([])
     db = Database(tmp_path / "update-meta.db"); window = MainWindow(db, enable_update_check=False)
