@@ -9,14 +9,16 @@ from openpyxl.utils import get_column_letter
 
 from .services import EventService
 
-HEADERS = ["행사", "대분류", "중분류", "항목", "확인 포인트", "상태", "수량", "단위",
-           "담당", "업체", "작업 시작일", "마감일", "일정 방식", "행사 단가", "VAT 구분", "메모"]
+HEADERS = ["행사", "대분류", "중분류", "항목", "세부내용", "상태", "수량", "단위",
+           "작업 시작일", "마감일", "담당자(PM)", "업체", "업체담당자", "업체담당자 전화번호", "VAT 구분", "메모"]
 
 
 def _task_rows(db, event_id=None):
     sql = """SELECT e.name event_name,t.major,t.minor,t.name,t.detail,t.status,t.quantity,t.unit,
-             p.name assignee,v.name vendor,t.planned_start,t.due_date,t.schedule_mode,t.unit_price,t.vat_type,t.note
+             t.planned_start,t.due_date,pm.name pm_assignee,v.name vendor,p.name vendor_assignee,p.phone,
+             t.vat_type,t.note
              FROM event_tasks t JOIN events e ON e.id=t.event_id
+             LEFT JOIN contacts pm ON pm.id=t.pm_assignee_id
              LEFT JOIN contacts p ON p.id=t.assignee_id LEFT JOIN contacts v ON v.id=t.vendor_id WHERE t.is_removed=0"""
     params = []
     if event_id is not None: sql += " AND t.event_id=?"; params.append(event_id)
@@ -44,7 +46,7 @@ def export_excel(db, destination: Path, event_id=None):
     destination = Path(destination); destination.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook(); ws = wb.active; ws.title = "체크리스트"; ws.append(HEADERS)
     for row in _task_rows(db, event_id): ws.append(list(row))
-    _style_sheet(ws, [24,10,14,22,36,12,10,10,16,18,14,14,12,14,12,36])
+    _style_sheet(ws, [24,10,14,22,36,12,10,10,14,14,16,18,18,18,12,36])
 
     service = EventService(db)
     events = service.list_events() if event_id is None else [service.get_event(event_id)]
@@ -68,8 +70,9 @@ def export_excel(db, destination: Path, event_id=None):
     _style_sheet(summary_ws, [24,18,15,13,17,15,13,15])
 
     events_ws = wb.create_sheet("행사")
-    events_ws.append(["ID", "행사명", "준비 시작일", "최종 행사일", "장소", "주최/주관", "예산", "예산 VAT 기준"])
-    for row in db.query("SELECT id,name,start_date,end_date,location,organizer,budget,budget_tax_mode FROM events ORDER BY start_date"):
+    events_ws.append(["ID", "행사명", "준비 시작일", "최종 행사일", "장소", "주최/주관", "예산", "예산 VAT 기준", "PM 업체"])
+    for row in db.query("""SELECT e.id,e.name,e.start_date,e.end_date,e.location,e.organizer,e.budget,e.budget_tax_mode,v.name
+                           FROM events e LEFT JOIN contacts v ON v.id=e.pm_vendor_id ORDER BY e.start_date"""):
         events_ws.append(list(row))
     contacts = wb.create_sheet("업체·담당자")
     contacts.append(["구분", "이름", "소속 업체", "연락처", "역할/분야"])

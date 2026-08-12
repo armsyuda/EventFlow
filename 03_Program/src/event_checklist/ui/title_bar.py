@@ -66,11 +66,11 @@ class TitleBar(QFrame):
         self.update_button.setText("확인 중")
         self.update_button.setEnabled(False)
 
-    def set_update_error(self):
+    def set_update_error(self, message="업데이트 확인 중 알 수 없는 오류가 발생했습니다."):
         self.update_meta.setText(f"현재 {__version__} · 확인 실패")
-        self.update_button.setText("업데이트 확인 불가")
+        self.update_button.setText("다시 확인")
         self.update_button.setEnabled(True)
-        self.update_button.setToolTip("인터넷 연결 또는 GitHub 저장소 공개 설정을 확인하세요.")
+        self.update_button.setToolTip(message)
 
     def toggle_maximized(self):
         self.window.showNormal() if self.window.isMaximized() else self.window.showMaximized()

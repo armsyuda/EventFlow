@@ -27,14 +27,16 @@ def test_v1_database_migrates_and_keeps_safety_copy(tmp_path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(master_items)")}
     assert {"default_vendor_id", "default_assignee_id"} <= columns
-    assert db.one("SELECT version FROM schema_info")["version"] == 5
+    assert db.one("SELECT version FROM schema_info")["version"] == 7
+    assert {"pm_vendor_id"} <= {row["name"] for row in db.query("PRAGMA table_info(events)")}
+    assert {"pm_assignee_id"} <= {row["name"] for row in db.query("PRAGMA table_info(event_tasks)")}
     assert db.one("SELECT COUNT(*) count FROM master_items")["count"] == 120
     db.close()
     assert (tmp_path / "legacy.pre-v1.db").exists()
 
 
-def test_v2_auto_schedules_rebase_but_manual_dates_are_preserved(tmp_path):
-    path = tmp_path / "v2.db"
+def test_v6_dates_are_preserved_and_automatic_schedule_columns_are_removed(tmp_path):
+    path = tmp_path / "v6.db"
     db = Database(path)
     service = EventService(db)
     masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 2")
@@ -42,28 +44,21 @@ def test_v2_auto_schedules_rebase_but_manual_dates_are_preserved(tmp_path):
         "준비 기간 행사", date(2026, 8, 10), date(2026, 10, 2), [row["id"] for row in masters]
     )
     tasks = db.query("SELECT id FROM event_tasks WHERE event_id=? ORDER BY id", (event_id,))
-    auto_id, manual_id = tasks[0]["id"], tasks[1]["id"]
-    db.execute(
-        "UPDATE event_tasks SET planned_start='2026-04-12',due_date='2026-08-07' WHERE id=?",
-        (auto_id,),
-    )
-    db.execute(
-        "UPDATE event_tasks SET planned_start='2026-08-15',due_date='2026-08-20',schedule_mode='manual' WHERE id=?",
-        (manual_id,),
-    )
-    db.execute("UPDATE schema_info SET version=2")
+    first_id, second_id = tasks[0]["id"], tasks[1]["id"]
+    db.execute("UPDATE event_tasks SET planned_start='2026-08-15',due_date='2026-08-20' WHERE id=?", (first_id,))
+    db.execute("UPDATE event_tasks SET planned_start=NULL,due_date=NULL WHERE id=?", (second_id,))
+    db.execute("UPDATE schema_info SET version=6")
     db.close()
 
     migrated = Database(path)
-    auto = migrated.one("SELECT planned_start,due_date FROM event_tasks WHERE id=?", (auto_id,))
-    manual = migrated.one("SELECT planned_start,due_date,schedule_mode FROM event_tasks WHERE id=?", (manual_id,))
-    assert auto["planned_start"] >= "2026-08-10"
-    assert auto["due_date"] <= "2026-10-02"
-    assert (manual["planned_start"], manual["due_date"], manual["schedule_mode"]) == (
-        "2026-08-15", "2026-08-20", "manual"
-    )
+    dated = migrated.one("SELECT planned_start,due_date FROM event_tasks WHERE id=?", (first_id,))
+    blank = migrated.one("SELECT planned_start,due_date FROM event_tasks WHERE id=?", (second_id,))
+    columns = {row["name"] for row in migrated.query("PRAGMA table_info(event_tasks)")}
+    assert tuple(dated) == ("2026-08-15", "2026-08-20")
+    assert tuple(blank) == (None, None)
+    assert {"schedule_mode", "anchor", "start_offset", "due_offset"}.isdisjoint(columns)
     migrated.close()
-    assert (tmp_path / "v2.pre-v2.db").exists()
+    assert (tmp_path / "v6.pre-v6.db").exists()
 
 
 def test_v3_cost_migrates_to_unit_price_and_keeps_pre_v3_copy(tmp_path):
@@ -75,7 +70,7 @@ def test_v3_cost_migrates_to_unit_price_and_keeps_pre_v3_copy(tmp_path):
     db.execute("UPDATE schema_info SET version=3"); db.close()
     migrated = Database(path)
     assert migrated.one("SELECT unit_price FROM event_tasks WHERE event_id=?", (event_id,))["unit_price"] == 3000
-    assert migrated.one("SELECT version FROM schema_info")["version"] == 5
+    assert migrated.one("SELECT version FROM schema_info")["version"] == 7
     migrated.close()
     assert (tmp_path / "event_checklist.pre-v3.db").exists()
 

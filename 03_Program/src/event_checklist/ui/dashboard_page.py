@@ -4,7 +4,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
 
-from ..schedule import d_day_label
 from ..theme import TOKENS
 from .widgets import KpiCard
 
@@ -103,7 +102,9 @@ class DashboardPage(QWidget):
         progress = round((data.get("progress") or 0) * 100); self.progress_text.setText(f"{progress}% · {data.get('completed') or 0}/{data.get('managed') or 0}개 완료")
         self.progress_bar.setValue(progress); self.urgent_list.clear()
         for task in data["urgent"]:
-            item = QListWidgetItem(f"{d_day_label(int(task['dday']))}    {task['name']}    · {task['status']}")
-            item.setSizeHint(item.sizeHint().expandedTo(item.sizeHint().__class__(0, 42))); overdue = int(task["dday"]) < 0
+            remaining = int(task["remaining_days"])
+            date_label = f"{abs(remaining)}일 지연" if remaining < 0 else ("오늘 마감" if remaining == 0 else f"{remaining}일 후 마감")
+            item = QListWidgetItem(f"{date_label}    {task['name']}    · {task['status']}")
+            item.setSizeHint(item.sizeHint().expandedTo(item.sizeHint().__class__(0, 42))); overdue = remaining < 0
             item.setBackground(QColor(TOKENS["critical_weak"] if overdue else TOKENS["warning_weak"])); item.setForeground(QColor(TOKENS["critical"] if overdue else TOKENS["warning"]))
             self.urgent_list.addItem(item)

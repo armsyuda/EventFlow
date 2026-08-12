@@ -9,6 +9,7 @@ from .config import install_dir, update_dir
 
 
 EXECUTABLE_NAME = "EventFlow.exe"
+INSTALL_MARKER_NAME = ".eventflow-installed"
 
 
 def current_executable() -> Path:
@@ -21,7 +22,12 @@ def is_packaged_app() -> bool:
 
 def is_fixed_installation(executable: Path | None = None) -> bool:
     executable = (executable or current_executable()).resolve()
-    return executable.name.casefold() == EXECUTABLE_NAME.casefold() and executable.parent == install_dir().resolve()
+    if executable.name.casefold() != EXECUTABLE_NAME.casefold():
+        return False
+    return (
+        executable.parent == install_dir().resolve()
+        or (executable.parent / INSTALL_MARKER_NAME).is_file()
+    )
 
 
 def _ps(value: Path | str) -> str:
@@ -63,6 +69,7 @@ def launch_fixed_installation(process_id: int) -> None:
     scripts.mkdir(parents=True, exist_ok=True)
     script_path = scripts / "install-eventflow.ps1"
     target_executable = target / EXECUTABLE_NAME
+    marker = target / INSTALL_MARKER_NAME
     script = f"""$ErrorActionPreference = 'Stop'
 $source = '{_ps(source_dir)}'
 $target = '{_ps(target)}'
@@ -85,6 +92,7 @@ try {{
         $swapped = $true
     }}
     Move-Item -LiteralPath $staging -Destination $target
+    Set-Content -LiteralPath '{_ps(marker)}' -Encoding ASCII -Value 'EventFlow installed application'
 {_shortcut_commands(target_executable)}
     Start-Process -FilePath '{_ps(target_executable)}' -WindowStyle Normal
     if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }}

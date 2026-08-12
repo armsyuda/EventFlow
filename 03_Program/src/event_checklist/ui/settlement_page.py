@@ -106,8 +106,7 @@ class SettlementPage(QWidget):
             return
         summary = self.service.settlement_summary(self.event_id)
         self._apply_summary_header(summary)
-        participants = self.service.event_participants(self.event_id)
-        vendors = participants["vendors"]
+        vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name,id")
         self._vendors = vendors; self._items = {}; self._task_rows = {}; self._subtotal_rows = {}
         current_major = None
         for item in summary["items"]:

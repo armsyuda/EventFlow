@@ -26,6 +26,11 @@ def test_backup_and_restore(db, tmp_path):
 
 
 def test_excel_and_csv_export(db, tmp_path):
+    first_master = db.one("SELECT id FROM master_items ORDER BY id LIMIT 1")
+    db.execute(
+        "UPDATE master_items SET detail=?,base_unit_price=? WHERE id=?",
+        ("현장 확인 세부내용", 12345, first_master["id"]),
+    )
     event_id = _event(db)
     xlsx = export_excel(db, tmp_path / "output.xlsx", event_id)
     csv_file = export_csv(db, tmp_path / "output.csv", event_id)
@@ -33,8 +38,15 @@ def test_excel_and_csv_export(db, tmp_path):
     workbook = load_workbook(xlsx, read_only=True)
     assert workbook["체크리스트"].max_row == 3
     assert workbook["체크리스트"]["A2"].value == "내보내기 행사"
+    checklist_headers = [cell.value for cell in workbook["체크리스트"][1]]
+    assert checklist_headers[3:5] == ["항목", "세부내용"]
+    assert "행사 단가" not in checklist_headers
+    assert workbook["체크리스트"]["E2"].value == "현장 확인 세부내용"
     assert {"상세 정산", "정산 요약"} <= set(workbook.sheetnames)
     assert workbook["상세 정산"]["A2"].value == "내보내기 행사"
+    settlement_headers = [cell.value for cell in workbook["상세 정산"][1]]
+    assert "행사 단가" in settlement_headers
+    assert workbook["상세 정산"]["G2"].value == 12345
     assert workbook["정산 요약"].max_row >= 2
     workbook.close()
     assert "내보내기 행사" in csv_file.read_text(encoding="utf-8-sig")

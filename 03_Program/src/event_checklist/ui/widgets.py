@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-from PySide6.QtCore import QDate, QEvent, QLocale, QRect, QTimer, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, QLocale, QPoint, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QCalendarWidget, QComboBox, QDateEdit,
@@ -209,6 +209,7 @@ class FastEditableTable(QTableWidget):
         super().__init__(rows, columns, parent)
         self._active_editor = None
         self._active_cell = None
+        self._date_popup: QFrame | None = None
         self._group_spans: list[tuple[int, int]] = []
         self._money_columns: set[int] = set()
         self._fixed_column_widths: dict[int, int] = {}
@@ -293,6 +294,11 @@ class FastEditableTable(QTableWidget):
         editor.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def close_cell_editor(self) -> None:
+        if self._date_popup is not None:
+            popup = self._date_popup
+            self._date_popup = None
+            popup.close()
+            popup.deleteLater()
         if self._active_editor is None or self._active_cell is None:
             return
         editor = self._active_editor
@@ -366,19 +372,62 @@ class FastEditableTable(QTableWidget):
         self.open_cell_editor(row, column, editor)
         editor.selectAll()
 
-    def open_date_editor(self, row: int, column: int, value: str, commit) -> None:
-        editor = DirectDateEdit()
-        editor.setDate(QDate.fromString(value, "yyyy-MM-dd"))
+    def open_date_editor(self, row: int, column: int, value: str | None, commit) -> None:
+        self.close_cell_editor()
+        popup = QFrame(self)
+        popup.setWindowFlags(Qt.WindowType.Popup)
+        popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        popup.setObjectName("DateChoicePopup")
+        popup.setStyleSheet(
+            "QFrame#DateChoicePopup{background:#FFFFFF;border:1px solid #C9CDD3;border-radius:8px;}"
+        )
+        layout = QVBoxLayout(popup); layout.setContentsMargins(8, 8, 8, 8); layout.setSpacing(6)
+        calendar = QCalendarWidget(popup)
+        calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        calendar.setGridVisible(True)
+        calendar.setSelectedDate(QDate.fromString(value, "yyyy-MM-dd") if value else QDate.currentDate())
+        calendar.setFixedSize(340, 270)
+        layout.addWidget(calendar)
+        actions = QHBoxLayout(); actions.setContentsMargins(0, 0, 0, 0); actions.setSpacing(6)
+        clear = QPushButton("날짜 비우기", popup)
+        clear.setToolTip("입력한 날짜를 지우고 미입력 상태로 되돌립니다.")
+        close = QPushButton("닫기", popup)
+        actions.addWidget(clear); actions.addStretch(); actions.addWidget(close)
+        layout.addLayout(actions)
+        self._date_popup = popup
+
+        def finish_popup():
+            if self._date_popup is popup:
+                self._date_popup = None
+            popup.close()
 
         def apply_date(selected: QDate):
             text = selected.toString("yyyy-MM-dd")
             if commit(text) is False:
                 return
-            QTimer.singleShot(0, self.close_cell_editor)
+            finish_popup()
 
-        editor.dateChanged.connect(apply_date)
-        self.open_cell_editor(row, column, editor)
-        QTimer.singleShot(0, editor._open_calendar)
+        def clear_date():
+            if commit(None) is False:
+                return
+            finish_popup()
+
+        calendar.clicked.connect(apply_date)
+        clear.clicked.connect(clear_date)
+        close.clicked.connect(finish_popup)
+        popup.destroyed.connect(lambda *_args: setattr(self, "_date_popup", None) if self._date_popup is popup else None)
+        popup.adjustSize()
+        rect = self.visualRect(self.model().index(row, column))
+        position = self.viewport().mapToGlobal(QPoint(rect.left(), rect.bottom()))
+        screen = QApplication.screenAt(position)
+        if screen is not None:
+            available = screen.availableGeometry()
+            if position.x() + popup.width() > available.right():
+                position.setX(max(available.left(), available.right() - popup.width()))
+            if position.y() + popup.height() > available.bottom():
+                position.setY(max(available.top(), self.viewport().mapToGlobal(rect.topLeft()).y() - popup.height()))
+        popup.move(position)
+        popup.show(); popup.raise_(); popup.activateWindow()
 
     def open_text_editor(self, row: int, column: int, value: str, commit) -> None:
         editor = QLineEdit(value or "")
