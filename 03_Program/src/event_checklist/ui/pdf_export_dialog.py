@@ -83,7 +83,7 @@ class PdfExportDialog(QDialog):
 
 
 class ChecklistPdfExportDialog(PdfExportDialog):
-    def __init__(self, majors, parent=None):
+    def __init__(self, majors, vendors=(), pm_assignees=(), parent=None):
         super().__init__(
             parent,
             title_text="체크리스트 PDF로 내보내기",
@@ -98,26 +98,47 @@ class ChecklistPdfExportDialog(PdfExportDialog):
         self.scope_combo = QComboBox()
         self.scope_combo.addItem("전체 인쇄", "ALL")
         self.scope_combo.addItem("대분류 선택", "MAJOR")
+        self.scope_combo.addItem("업체별 인쇄", "VENDOR")
+        self.scope_combo.addItem("담당자(PM)별 인쇄", "PM")
         layout.addWidget(self.scope_combo)
         self.major_combo = QComboBox()
         for major in majors:
             self.major_combo.addItem(major, major)
         layout.addWidget(self.major_combo)
+        self.vendor_combo = QComboBox()
+        for vendor in vendors:
+            self.vendor_combo.addItem(vendor["name"], int(vendor["id"]))
+        layout.addWidget(self.vendor_combo)
+        self.pm_combo = QComboBox()
+        for person in pm_assignees:
+            self.pm_combo.addItem(person["name"], int(person["id"]))
+        layout.addWidget(self.pm_combo)
         self.layout().insertWidget(self.layout().count() - 1, panel)
         self.scope_combo.currentIndexChanged.connect(self._sync_scope)
         self._sync_scope()
 
     def _sync_scope(self):
-        self.major_combo.setEnabled(self.scope_combo.currentData() == "MAJOR")
+        scope = self.scope_combo.currentData()
+        self.major_combo.setEnabled(scope == "MAJOR")
+        self.vendor_combo.setEnabled(scope == "VENDOR")
+        self.pm_combo.setEnabled(scope == "PM")
 
     def major_filter(self):
         if self.scope_combo.currentData() == "MAJOR":
             return self.major_combo.currentData() or ""
         return ""
 
+    def assignment_filter(self):
+        scope = self.scope_combo.currentData()
+        if scope == "VENDOR":
+            return self.vendor_combo.currentData(), None, self.vendor_combo.currentText()
+        if scope == "PM":
+            return None, self.pm_combo.currentData(), self.pm_combo.currentText()
+        return None, None, ""
+
 
 class CalendarPdfExportDialog(PdfExportDialog):
-    def __init__(self, categories, parent=None):
+    def __init__(self, categories, vendors=(), pm_assignees=(), parent=None):
         super().__init__(
             parent,
             default_orientation="LANDSCAPE",
@@ -136,6 +157,8 @@ class CalendarPdfExportDialog(PdfExportDialog):
         self.scope_combo.addItem("전체 일정", "ALL")
         self.scope_combo.addItem("대분류 선택", "MAJOR")
         self.scope_combo.addItem("중분류 선택", "MINOR")
+        self.scope_combo.addItem("업체별 인쇄", "VENDOR")
+        self.scope_combo.addItem("담당자(PM)별 인쇄", "PM")
         layout.addWidget(self.scope_combo)
         self.major_combo = QComboBox()
         self.minor_combo = QComboBox()
@@ -143,6 +166,14 @@ class CalendarPdfExportDialog(PdfExportDialog):
             self.major_combo.addItem(major, major)
         layout.addWidget(self.major_combo)
         layout.addWidget(self.minor_combo)
+        self.vendor_combo = QComboBox()
+        for vendor in vendors:
+            self.vendor_combo.addItem(vendor["name"], int(vendor["id"]))
+        layout.addWidget(self.vendor_combo)
+        self.pm_combo = QComboBox()
+        for person in pm_assignees:
+            self.pm_combo.addItem(person["name"], int(person["id"]))
+        layout.addWidget(self.pm_combo)
         self.layout().insertWidget(self.layout().count() - 1, panel)
         self.scope_combo.currentIndexChanged.connect(self._sync_scope)
         self.major_combo.currentIndexChanged.connect(self._sync_minors)
@@ -161,6 +192,8 @@ class CalendarPdfExportDialog(PdfExportDialog):
         scope = self.scope_combo.currentData()
         self.major_combo.setEnabled(scope in {"MAJOR", "MINOR"})
         self.minor_combo.setEnabled(scope == "MINOR")
+        self.vendor_combo.setEnabled(scope == "VENDOR")
+        self.pm_combo.setEnabled(scope == "PM")
 
     def filters(self):
         scope = self.scope_combo.currentData()
@@ -169,6 +202,30 @@ class CalendarPdfExportDialog(PdfExportDialog):
         if scope == "MINOR":
             return self.major_combo.currentData() or "", self.minor_combo.currentData() or ""
         return "", ""
+
+    def assignment_filter(self):
+        scope = self.scope_combo.currentData()
+        if scope == "VENDOR":
+            return self.vendor_combo.currentData(), None, self.vendor_combo.currentText()
+        if scope == "PM":
+            return None, self.pm_combo.currentData(), self.pm_combo.currentText()
+        return None, None, ""
+
+
+def _assignment_choices(db, event_id):
+    vendors = db.query(
+        """SELECT DISTINCT c.id,c.name FROM event_tasks t
+           JOIN contacts c ON c.id=t.vendor_id
+           WHERE t.event_id=? AND t.is_removed=0 ORDER BY c.name,c.id""",
+        (event_id,),
+    )
+    pm_assignees = db.query(
+        """SELECT DISTINCT c.id,c.name FROM event_tasks t
+           JOIN contacts c ON c.id=t.pm_assignee_id
+           WHERE t.event_id=? AND t.is_removed=0 ORDER BY c.name,c.id""",
+        (event_id,),
+    )
+    return vendors, pm_assignees
 
 
 def export_pdf_from_page(parent, db, event_id, kind, exporter) -> Path | None:
@@ -182,7 +239,8 @@ def export_pdf_from_page(parent, db, event_id, kind, exporter) -> Path | None:
                WHERE event_id=? AND is_removed=0 GROUP BY major ORDER BY first_order,major""",
             (event_id,),
         )
-        dialog = ChecklistPdfExportDialog([row["major"] for row in rows], parent)
+        vendors, pm_assignees = _assignment_choices(db, event_id)
+        dialog = ChecklistPdfExportDialog([row["major"] for row in rows], vendors, pm_assignees, parent)
     else:
         dialog = PdfExportDialog(parent)
     if not dialog.exec():
@@ -191,7 +249,10 @@ def export_pdf_from_page(parent, db, event_id, kind, exporter) -> Path | None:
     options = dialog.options()
     if kind == "checklist":
         major = dialog.major_filter()
-    filename = default_pdf_filename(event, kind, options, major=major)
+        vendor_id, pm_assignee_id, assignment_label = dialog.assignment_filter()
+    else:
+        vendor_id, pm_assignee_id, assignment_label = None, None, ""
+    filename = default_pdf_filename(event, kind, options, major=major, scope_label=assignment_label)
     path, _ = QFileDialog.getSaveFileName(
         parent, "PDF로 내보내기", filename, "PDF (*.pdf)",
         options=QFileDialog.Option.DontConfirmOverwrite,
@@ -204,7 +265,10 @@ def export_pdf_from_page(parent, db, event_id, kind, exporter) -> Path | None:
     destination = next_available_pdf_path(destination)
     try:
         if kind == "checklist":
-            result = exporter(db, int(event_id), destination, options, major)
+            result = exporter(
+                db, int(event_id), destination, options, major,
+                vendor_id, pm_assignee_id, assignment_label,
+            )
         else:
             result = exporter(db, int(event_id), destination, options)
     except Exception as exc:
@@ -232,13 +296,17 @@ def export_calendar_pdf_from_page(parent, db, event_id, year, month, exporter) -
             categories.append(pair)
         if row["minor"] not in pair[1]:
             pair[1].append(row["minor"])
-    dialog = CalendarPdfExportDialog(categories, parent)
+    vendors, pm_assignees = _assignment_choices(db, event_id)
+    dialog = CalendarPdfExportDialog(categories, vendors, pm_assignees, parent)
     if not dialog.exec():
         return None
     event = db.one("SELECT * FROM events WHERE id=?", (event_id,))
     options = dialog.options()
     major, minor = dialog.filters()
-    filename = default_pdf_filename(event, "calendar", options, major=major, minor=minor)
+    vendor_id, pm_assignee_id, assignment_label = dialog.assignment_filter()
+    filename = default_pdf_filename(
+        event, "calendar", options, major=major, minor=minor, scope_label=assignment_label,
+    )
     path, _ = QFileDialog.getSaveFileName(
         parent, "달력 PDF로 내보내기", filename, "PDF (*.pdf)",
         options=QFileDialog.Option.DontConfirmOverwrite,
@@ -250,7 +318,10 @@ def export_calendar_pdf_from_page(parent, db, event_id, year, month, exporter) -
         destination = destination.with_suffix(".pdf")
     destination = next_available_pdf_path(destination)
     try:
-        result = exporter(db, int(event_id), destination, int(year), int(month), options, major, minor)
+        result = exporter(
+            db, int(event_id), destination, int(year), int(month), options, major, minor,
+            vendor_id, pm_assignee_id, assignment_label,
+        )
     except Exception as exc:
         QMessageBox.critical(parent, "PDF 내보내기 실패", f"PDF 파일을 만들지 못했습니다.\n\n{exc}")
         return None

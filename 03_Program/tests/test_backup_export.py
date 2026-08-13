@@ -236,6 +236,10 @@ def test_pdf_default_filename_and_same_day_sequence(db, tmp_path):
         event, "calendar", PdfOptions("A4", "LANDSCAPE"), date(2026, 8, 13),
         major="시스템", minor="무대",
     ) == "달력_내보내기 행사_시스템_무대_20260813_A4가로.pdf"
+    assert default_pdf_filename(
+        event, "checklist", PdfOptions("A4", "PORTRAIT"), date(2026, 8, 13),
+        scope_label="영상 업체",
+    ) == "체크리스트_내보내기 행사_영상 업체_20260813_A4세로.pdf"
     first = tmp_path / name
     first.write_bytes(b"first")
     second = next_available_pdf_path(first)

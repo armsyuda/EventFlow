@@ -312,7 +312,8 @@ def test_checklist_header_is_compacted_into_two_rows(tmp_path):
     action_centers = [
         widget.y() + widget.height() // 2
         for widget in (
-            page.search, page.status_filter, page.major_filter, page.bulk_assign_button,
+            page.search, page.status_filter, page.major_filter, page.vendor_filter, page.pm_filter,
+            page.bulk_assign_button,
             page.add_button, page.remove_button, page.removed_toggle, page.pdf_button,
         )
     ]
@@ -324,6 +325,45 @@ def test_checklist_header_is_compacted_into_two_rows(tmp_path):
     }
     assert action_heights == {44}
     page.close(); db.close(); app.setStyleSheet(previous_style)
+
+
+def test_checklist_vendor_and_pm_filters_show_only_matching_tasks(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "checklist-assignment-filters.db")
+    service = EventService(db)
+    pm_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','PM 회사')").lastrowid
+    vendor_a = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','가 실행사')").lastrowid
+    vendor_b = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','나 실행사')").lastrowid
+    pm_a = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','김 PM',?)", (pm_vendor,)
+    ).lastrowid
+    pm_b = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','박 PM',?)", (pm_vendor,)
+    ).lastrowid
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")
+    event_id = service.create_event(
+        "필터 행사", date(2026, 10, 1), date(2026, 10, 3),
+        [row["id"] for row in masters], pm_vendor_id=pm_vendor,
+    )
+    tasks = service.list_tasks(event_id)
+    for task, vendor_id, pm_id in zip(tasks, (vendor_a, vendor_b, vendor_b), (pm_a, pm_a, pm_b)):
+        db.execute(
+            "UPDATE event_tasks SET vendor_id=?,pm_assignee_id=? WHERE id=?",
+            (vendor_id, pm_id, task["id"]),
+        )
+    page = EventsPage(service, db)
+    page.set_event(event_id)
+    assert page.vendor_filter.findData(vendor_a) >= 0
+    assert page.vendor_filter.findData(vendor_b) >= 0
+    assert page.pm_filter.findData(pm_a) >= 0
+    assert page.pm_filter.findData(pm_b) >= 0
+    page.vendor_filter.setCurrentIndex(page.vendor_filter.findData(vendor_b)); app.processEvents()
+    assert page.table.rowCount() == 2
+    page.pm_filter.setCurrentIndex(page.pm_filter.findData(pm_b)); app.processEvents()
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 8).text() == "박 PM"
+    assert page.table.item(0, 9).text() == "나 실행사"
+    page.close(); db.close()
 
 
 def test_pdf_export_uses_icon_only_buttons_and_a4_portrait_defaults(tmp_path):
@@ -386,7 +426,11 @@ def test_settings_export_section_has_excel_only(tmp_path):
 
 def test_calendar_pdf_dialog_filters_current_event_categories():
     app = QApplication.instance() or QApplication([])
-    dialog = CalendarPdfExportDialog([("행사", ["연출", "공연"]), ("운영", ["안전"])])
+    vendors = [{"id": 10, "name": "무대 업체"}]
+    pm_assignees = [{"id": 20, "name": "김 PM"}]
+    dialog = CalendarPdfExportDialog(
+        [("행사", ["연출", "공연"]), ("운영", ["안전"])], vendors, pm_assignees,
+    )
     assert dialog.options() == PdfOptions("A4", "LANDSCAPE")
     assert dialog.filters() == ("", "")
     dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MAJOR"))
@@ -394,17 +438,29 @@ def test_calendar_pdf_dialog_filters_current_event_categories():
     assert dialog.filters() == ("운영", "")
     dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MINOR"))
     assert dialog.filters() == ("운영", "안전")
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("VENDOR"))
+    assert dialog.filters() == ("", "")
+    assert dialog.assignment_filter() == (10, None, "무대 업체")
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("PM"))
+    assert dialog.assignment_filter() == (None, 20, "김 PM")
     dialog.close()
 
 
 def test_checklist_pdf_dialog_selects_all_or_one_major_category():
     app = QApplication.instance() or QApplication([])
-    dialog = ChecklistPdfExportDialog(["시스템", "시설", "행사"])
+    vendors = [{"id": 10, "name": "영상 업체"}]
+    pm_assignees = [{"id": 20, "name": "박 PM"}]
+    dialog = ChecklistPdfExportDialog(["시스템", "시설", "행사"], vendors, pm_assignees)
     assert dialog.options() == PdfOptions("A4", "PORTRAIT")
     assert dialog.major_filter() == ""
     dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MAJOR"))
     dialog.major_combo.setCurrentIndex(dialog.major_combo.findData("시설"))
     assert dialog.major_filter() == "시설"
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("VENDOR"))
+    assert dialog.major_filter() == ""
+    assert dialog.assignment_filter() == (10, None, "영상 업체")
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("PM"))
+    assert dialog.assignment_filter() == (None, 20, "박 PM")
     dialog.close()
 
 

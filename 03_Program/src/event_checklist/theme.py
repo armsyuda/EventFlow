@@ -111,9 +111,10 @@ def application_stylesheet() -> str:
     QPushButton[attention="true"]:hover {{ color: white; background: {c['brand']}; }}
     QPushButton[quiet="true"] {{ color: {c['fg_muted']}; background: {c['bg_weak']}; border-color: {c['stroke']}; }}
     QPushButton[quiet="true"]:checked {{ color: {c['brand']}; background: {c['brand_weak']}; border-color: #F7C5AE; }}
-    QPushButton[checklistAction="true"] {{ min-height: 42px; max-height: 42px; }}
+    QPushButton[checklistAction="true"] {{ min-height: 42px; max-height: 42px; font-size: 13px; }}
     QPushButton[checklistAction="true"][primary="true"] {{ min-height: 44px; max-height: 44px; }}
     QPushButton[checklistAction="true"][attention="true"] {{ min-height: 40px; max-height: 40px; }}
+    QWidget[checklistCompact="true"] {{ font-size: 13px; }}
     QPushButton#PdfExportButton {{ min-width: 0px; min-height: 0px; padding: 8px; background: {c['bg_layer']}; }}
     QPushButton#PdfExportButton:hover {{ background: {c['brand_weak']}; border-color: #F7C5AE; }}
     QRadioButton[pdfOption="true"] {{ background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 8px; padding: 0 14px; font-weight: 700; }}

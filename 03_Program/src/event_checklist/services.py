@@ -166,7 +166,9 @@ class EventService:
     def delete_event(self, event_id: int) -> None:
         self.db.execute("DELETE FROM events WHERE id=?", (event_id,))
 
-    def list_tasks(self, event_id: int, search: str = "", status: str = "", major: str = "", include_removed: bool = False):
+    def list_tasks(self, event_id: int, search: str = "", status: str = "", major: str = "",
+                   include_removed: bool = False, vendor_id: int | None = None,
+                   pm_assignee_id: int | None = None):
         sql = """
             SELECT t.*, p.name AS assignee_name, p.phone AS assignee_phone,
                    pm.name AS pm_assignee_name, v.name AS vendor_name
@@ -189,6 +191,12 @@ class EventService:
         if major:
             sql += " AND t.major=?"
             params.append(major)
+        if vendor_id is not None:
+            sql += " AND t.vendor_id=?"
+            params.append(int(vendor_id))
+        if pm_assignee_id is not None:
+            sql += " AND t.pm_assignee_id=?"
+            params.append(int(pm_assignee_id))
         # 분류 셀을 한 덩어리로 병합할 수 있도록 같은 대분류와 중분류를
         # 반드시 인접하게 둔다. 각 분류의 최초 sort_order로 기존 분류 순서를
         # 보존하고, 나중에 추가한 항목도 선택한 분류 안쪽에 배치한다.
@@ -334,7 +342,8 @@ class EventService:
         return self.db.query(sql, params)
 
     def calendar_range(self, first: date, last: date, event_id: int | None = None,
-                       major: str = "", minor: str = ""):
+                       major: str = "", minor: str = "", vendor_id: int | None = None,
+                       pm_assignee_id: int | None = None):
         sql = """
             SELECT id,event_id,name,major,minor,sort_order,planned_start,due_date,status
             FROM event_tasks WHERE is_removed=0 AND status NOT IN ('완료','해당없음')
@@ -351,6 +360,12 @@ class EventService:
         if minor:
             sql += " AND minor=?"
             params.append(minor)
+        if vendor_id is not None:
+            sql += " AND vendor_id=?"
+            params.append(int(vendor_id))
+        if pm_assignee_id is not None:
+            sql += " AND pm_assignee_id=?"
+            params.append(int(pm_assignee_id))
         sql += " ORDER BY due_date, sort_order"
         return self.db.query(sql, params)
 
