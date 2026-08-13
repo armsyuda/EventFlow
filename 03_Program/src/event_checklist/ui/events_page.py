@@ -3,18 +3,20 @@ from __future__ import annotations
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDateEdit, QDoubleSpinBox, QHBoxLayout,
+    QAbstractItemView, QDateEdit, QDoubleSpinBox, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from ..choices import load_master_choice_catalog
+from ..pdf_export import export_checklist_pdf
 from ..theme import status_color
-from .dialogs import CustomTaskDialog, MasterImportDialog, TaskDetailsDialog
+from .dialogs import BulkAssignmentDialog, CustomTaskDialog, MasterImportDialog, person_display_label
 from .widgets import (
     GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, AppComboBox, FastEditableTable, configure_editable_table,
     fit_table_to_view,
 )
+from .pdf_export_dialog import configure_pdf_icon_button, export_pdf_from_page
 
 STATUSES = ["미착수", "진행중", "확인요청", "완료", "보류", "해당없음"]
 
@@ -36,33 +38,32 @@ class EventsPage(QWidget):
         root.setSpacing(14)
 
         top = QHBoxLayout()
-        title_box = QVBoxLayout()
+        top.setSpacing(10)
         title = QLabel("체크리스트")
         title.setObjectName("PageTitle")
         self.description = QLabel("선택한 행사의 업무 상태와 일정을 관리합니다.")
         self.description.setObjectName("PageDescription")
-        title_box.addWidget(title)
-        title_box.addWidget(self.description)
-        top.addLayout(title_box)
+        self.summary = QLabel("")
+        self.summary.setObjectName("ChecklistCount")
+        top.addWidget(title, 0, Qt.AlignmentFlag.AlignBottom)
+        top.addWidget(self.description, 0, Qt.AlignmentFlag.AlignBottom)
+        top.addWidget(self.summary, 0, Qt.AlignmentFlag.AlignBottom)
         top.addStretch()
-        self.remove_button = None
-        for text, callback, primary in [
-            ("기본항목 가져오기", self.import_master, False),
-            ("직접 항목 추가", self.add_custom, True),
-            ("선택 항목 제외", self.remove_selected, False),
-        ]:
-            button = QPushButton(text)
-            button.setProperty("primary", primary)
-            button.clicked.connect(callback)
-            top.addWidget(button)
-            if text == "선택 항목 제외":
-                self.remove_button = button
-        self.removed_toggle = QCheckBox("제외 항목 보기")
-        self.removed_toggle.toggled.connect(self._removed_view_toggled)
-        top.addWidget(self.removed_toggle)
+        self.import_button = QPushButton("기본항목에서 항목 가져오기")
+        self.import_button.clicked.connect(self.import_master)
+        self.import_button.setProperty("quiet", True)
+        top.addWidget(self.import_button)
+        self.edit_event_button = QPushButton("행사 정보 수정")
+        self.edit_event_button.clicked.connect(lambda: self.event_id and self.edit_requested.emit(self.event_id))
+        self.edit_event_button.setProperty("quiet", True)
+        top.addWidget(self.edit_event_button)
+        self.fit_button = QPushButton("열 너비 맞춤")
+        self.fit_button.clicked.connect(lambda: fit_table_to_view(self.table))
+        top.addWidget(self.fit_button)
         root.addLayout(top)
 
-        filters = QHBoxLayout()
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
         self.search = QLineEdit()
         self.search.setPlaceholderText("항목·세부내용·메모 검색")
         self.search.setClearButtonEnabled(True)
@@ -77,19 +78,38 @@ class EventsPage(QWidget):
         for major in load_master_choice_catalog(self.db).majors:
             self.major_filter.addItem(major, major)
         self.major_filter.currentIndexChanged.connect(self.refresh_tasks)
-        self.summary = QLabel("")
-        self.summary.setObjectName("Muted")
-        edit_event = QPushButton("행사 정보 수정")
-        edit_event.clicked.connect(lambda: self.event_id and self.edit_requested.emit(self.event_id))
-        fit = QPushButton("열 너비 맞춤")
-        fit.clicked.connect(lambda: fit_table_to_view(self.table))
-        filters.addWidget(self.search, 1)
-        filters.addWidget(self.status_filter)
-        filters.addWidget(self.major_filter)
-        filters.addWidget(self.summary)
-        filters.addWidget(edit_event)
-        filters.addWidget(fit)
-        root.addLayout(filters)
+        self.bulk_assign_button = QPushButton("선택 행 담당 지정")
+        self.bulk_assign_button.setProperty("checklistAction", True)
+        self.bulk_assign_button.clicked.connect(self.assign_selected)
+        actions.addWidget(self.search, 1)
+        actions.addWidget(self.status_filter)
+        actions.addWidget(self.major_filter)
+        actions.addWidget(self.bulk_assign_button)
+        self.add_button = QPushButton("+ 직접 항목 추가")
+        self.add_button.setProperty("checklistAction", True)
+        self.add_button.setProperty("primary", True)
+        self.add_button.setMinimumSize(170, 48)
+        self.add_button.clicked.connect(self.add_custom)
+        actions.addWidget(self.add_button)
+        self.remove_button = QPushButton("선택 항목 제외")
+        self.remove_button.setProperty("checklistAction", True)
+        self.remove_button.setProperty("attention", True)
+        self.remove_button.setMinimumSize(150, 48)
+        self.remove_button.clicked.connect(self.remove_selected)
+        actions.addWidget(self.remove_button)
+        self.removed_toggle = QPushButton("제외 항목 보기")
+        self.removed_toggle.setProperty("checklistAction", True)
+        self.removed_toggle.setCheckable(True)
+        self.removed_toggle.setProperty("quiet", True)
+        self.removed_toggle.setMinimumHeight(48)
+        self.removed_toggle.toggled.connect(self._removed_view_toggled)
+        actions.addWidget(self.removed_toggle)
+        self.pdf_button = QPushButton()
+        self.pdf_button.setProperty("checklistAction", True)
+        configure_pdf_icon_button(self.pdf_button, size=44)
+        self.pdf_button.clicked.connect(self.export_pdf)
+        actions.addWidget(self.pdf_button)
+        root.addLayout(actions)
 
         self.table = FastEditableTable(0, 12)
         self.table.setHorizontalHeaderLabels([
@@ -98,14 +118,13 @@ class EventsPage(QWidget):
         ])
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         configure_editable_table(
             self.table, [52, 92, 116, 190, 260, 112, 125, 125, 155, 145, 165, 150], grouped=True
         )
         self.table.set_fixed_columns({0: 52})
-        self.table.cellClicked.connect(self._open_cell_editor)
-        self.table.doubleClicked.connect(self.edit_task_details)
+        self.table.cellDoubleClicked.connect(self._open_cell_editor)
         root.addWidget(self.table, 1)
 
     def set_event(self, event_id: int | None, *, force: bool = False):
@@ -116,6 +135,9 @@ class EventsPage(QWidget):
         self.description.setText(f"{event['name']}의 업무 상태와 일정을 관리합니다." if event else "행사를 선택하세요.")
         self.refresh_tasks()
         self._loaded_event_id = event_id
+
+    def export_pdf(self):
+        export_pdf_from_page(self, self.db, self.event_id, "checklist", export_checklist_pdf)
 
     def invalidate(self):
         self._loaded_event_id = None
@@ -191,33 +213,42 @@ class EventsPage(QWidget):
         self.refresh_tasks()
         self.changed.emit(self.event_id or 0)
 
+    def assign_selected(self):
+        ids = self._selected_task_ids()
+        if not ids:
+            QMessageBox.information(self, "항목 선택", "담당자를 지정할 항목 행을 선택하세요.\nCtrl 또는 Shift를 누르면 여러 행을 선택할 수 있습니다.")
+            return
+        event = self.service.get_event(self.event_id)
+        vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name,id")
+        people = self.db.query("SELECT * FROM contacts WHERE kind='PERSON' ORDER BY name,id")
+        dialog = BulkAssignmentDialog(event, vendors, people, len(ids), self)
+        if not dialog.exec():
+            return
+        try:
+            changed_count = self.service.bulk_assign_tasks(self.event_id, ids, **dialog.values())
+        except Exception as exc:
+            QMessageBox.critical(self, "담당 일괄 지정 실패", str(exc))
+            return
+        self.refresh_tasks()
+        self.changed.emit(self.event_id or 0)
+        QMessageBox.information(self, "일괄 지정 완료", f"선택한 {changed_count}개 항목에 적용했습니다.")
+
     def _removed_view_toggled(self, checked: bool):
         if self.remove_button is not None:
             self.remove_button.setText("선택 항목 복원" if checked else "선택 항목 제외")
+        self.bulk_assign_button.setEnabled(not checked)
         self.refresh_tasks()
 
     def _selected_task_ids(self):
         ids = []
-        for index in self.table.selectionModel().selectedRows():
-            item = self.table.item(index.row(), 3)
+        # 사용자는 행 머리글뿐 아니라 셀 범위를 드래그해서 선택한다. selectedRows()
+        # 는 완전한 행 선택만 반환하므로, 선택된 셀이 하나라도 있는 모든 행을 모은다.
+        selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedIndexes()})
+        for row in selected_rows:
+            item = self.table.item(row, 3)
             if item:
                 ids.append(int(item.data(Qt.ItemDataRole.UserRole)))
-        return ids
-
-    def edit_task_details(self):
-        row = self.table.currentRow()
-        if row < 0 or row >= len(self._current_tasks):
-            return
-        task = self._current_tasks[row]
-        dialog = TaskDetailsDialog(task, self, unit_choices=load_master_choice_catalog(self.db).units)
-        if dialog.exec():
-            try:
-                self.service.update_task(task["id"], **dialog.values())
-            except Exception as exc:
-                QMessageBox.critical(self, "항목 수정 실패", str(exc))
-                return
-            self.refresh_tasks()
-            self.changed.emit(self.event_id or 0)
+        return list(dict.fromkeys(ids))
 
     def refresh_tasks(self):
         self.loading = True
@@ -273,6 +304,7 @@ class EventsPage(QWidget):
                 group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row_index, column, group)
             name = QTableWidgetItem(task["name"]); name.setData(Qt.ItemDataRole.UserRole, task_id)
+            name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
             tooltip = task["detail"] or "세부내용 없음"
             if task["is_removed"]: tooltip += f"\n제외 사유: {task['removed_reason'] or '미입력'}"
             name.setToolTip(tooltip); self.table.setItem(row_index, 3, name)
@@ -341,17 +373,22 @@ class EventsPage(QWidget):
 
     @staticmethod
     def _assignee_label(person) -> str:
-        company = str(person["company_name"] or "").strip()
-        return f"{person['name']} · {company}" if company else f"{person['name']} · 프리랜서"
+        return person_display_label(person)
 
     def _open_cell_editor(self, row: int, column: int) -> None:
-        if self.loading or column not in {5, 6, 7, 8, 9, 10}:
+        if self.loading or column not in {3, 4, 5, 6, 7, 8, 9, 10}:
             return
         task = self._task_for_row(row)
         if not task or task["is_removed"]:
             return
         task_id = int(task["id"])
-        if column == 5:
+        if column in {3, 4}:
+            field = "name" if column == 3 else "detail"
+            self.table.open_text_editor(
+                row, column, task[field] or "",
+                lambda value: self._commit_text(row, task, column, field, value),
+            )
+        elif column == 5:
             choices = [(status, status) for status in STATUSES]
             self.table.open_choice_editor(row, column, choices, task["status"],
                                           lambda value: self._commit_status(row, task, value))
@@ -372,6 +409,19 @@ class EventsPage(QWidget):
             choices = [("미지정", None)] + [(self._assignee_label(x), x["id"]) for x in rows]
             self.table.open_choice_editor(row, column, choices, task["assignee_id"],
                                           lambda value: self._commit_vendor_contact(row, task, value, choices))
+
+    def _commit_text(self, row, task, column, field, value):
+        if field == "name" and not value:
+            QMessageBox.warning(self, "입력 확인", "항목명은 비워둘 수 없습니다.")
+            return False
+        self.service.update_task(int(task["id"]), **{field: value})
+        task[field] = value
+        cell = self.table.item(row, column)
+        cell.setText(value)
+        if field == "detail":
+            cell.setToolTip(value or "세부내용 없음")
+            self.table.item(row, 3).setToolTip(value or "세부내용 없음")
+        self.changed.emit(self.event_id or 0)
 
     def _commit_simple(self, row, task, column, field, value, choices):
         self.service.update_task(int(task["id"]), **{field: value}); task[field] = value

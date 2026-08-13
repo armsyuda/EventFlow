@@ -245,12 +245,19 @@ class MainWindow(QMainWindow):
     def create_event(self):
         masters = self.db.query("SELECT * FROM master_items ORDER BY sort_order")
         vendors, freelancers = self._contacts_for_event_dialog()
-        dialog = EventDialog(masters, vendors=vendors, freelancers=freelancers, parent=self)
+        dialog = EventDialog(
+            masters, vendors=vendors, freelancers=freelancers,
+            previous_events=self.service.list_events(), previous_task_loader=self.service.list_tasks,
+            parent=self,
+        )
         if not dialog.exec(): return
+        import_values = dialog.import_values()
         try:
-            event_id = self.service.create_event(**dialog.values(), selected_master_ids=dialog.selected_ids(),
+            event_id = self.service.create_event(**dialog.values(),
+                                                 selected_master_ids=[] if import_values else dialog.selected_ids(),
                                                  vendor_ids=dialog.selected_vendor_ids(),
-                                                 freelancer_ids=dialog.selected_freelancer_ids())
+                                                 freelancer_ids=dialog.selected_freelancer_ids(),
+                                                 **import_values)
         except Exception as exc:
             QMessageBox.critical(self, "행사 생성 실패", str(exc)); return
         self.select_event(event_id); self.nav_buttons[1].click()

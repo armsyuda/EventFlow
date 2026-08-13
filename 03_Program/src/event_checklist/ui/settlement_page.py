@@ -3,12 +3,15 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..theme import TOKENS
 from ..choices import load_master_choice_catalog
+from ..pdf_export import export_settlement_pdf
+from .dialogs import BulkAssignmentDialog
+from .pdf_export_dialog import configure_pdf_icon_button, export_pdf_from_page
 from .widgets import (
     GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, AppComboBox, FastEditableTable, KpiCard,
     configure_editable_table, configure_money_spin, fit_table_to_view,
@@ -55,9 +58,16 @@ class SettlementPage(QWidget):
         self.tax_mode.currentIndexChanged.connect(self._save_budget)
         fit = QPushButton("열 너비 맞춤")
         fit.clicked.connect(lambda: fit_table_to_view(self.table))
+        self.bulk_assign_button = QPushButton("선택 행 담당 지정")
+        self.bulk_assign_button.clicked.connect(self.assign_selected)
+        self.pdf_button = QPushButton()
+        configure_pdf_icon_button(self.pdf_button)
+        self.pdf_button.clicked.connect(self.export_pdf)
         top.addWidget(self.budget)
         top.addWidget(self.tax_mode)
+        top.addWidget(self.bulk_assign_button)
         top.addWidget(fit)
+        top.addWidget(self.pdf_button)
         root.addLayout(top)
 
         cards = QGridLayout()
@@ -81,9 +91,41 @@ class SettlementPage(QWidget):
             "VAT 구분", "VAT", "합계", "업체", "메모",
         ])
         self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         configure_editable_table(self.table, [90, 110, 180, 90, 80, 130, 130, 105, 110, 130, 150, 220], grouped=True, anchor_column=0)
-        self.table.cellClicked.connect(self._open_cell_editor)
+        self.table.cellDoubleClicked.connect(self._open_cell_editor)
         root.addWidget(self.table, 1)
+
+    def _selected_task_ids(self):
+        ids = []
+        selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedIndexes()})
+        for row in selected_rows:
+            cell = self.table.item(row, 2)
+            task_id = cell.data(Qt.ItemDataRole.UserRole) if cell else None
+            if task_id is not None and int(task_id) in self._items:
+                ids.append(int(task_id))
+        return list(dict.fromkeys(ids))
+
+    def assign_selected(self):
+        ids = self._selected_task_ids()
+        if not ids:
+            QMessageBox.information(self, "항목 선택", "담당자를 지정할 정산 항목 행을 선택하세요.\nCtrl 또는 Shift를 누르면 여러 행을 선택할 수 있습니다.")
+            return
+        event = self.service.get_event(self.event_id)
+        vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name,id")
+        people = self.db.query("SELECT * FROM contacts WHERE kind='PERSON' ORDER BY name,id")
+        dialog = BulkAssignmentDialog(event, vendors, people, len(ids), self)
+        if not dialog.exec():
+            return
+        try:
+            changed_count = self.service.bulk_assign_tasks(self.event_id, ids, **dialog.values())
+        except Exception as exc:
+            QMessageBox.critical(self, "담당 일괄 지정 실패", str(exc))
+            return
+        self.refresh()
+        self.changed.emit(self.event_id or 0)
+        QMessageBox.information(self, "일괄 지정 완료", f"선택한 {changed_count}개 항목에 적용했습니다.")
 
     def set_event(self, event_id: int | None, *, force: bool = False):
         if not force and self._loaded_event_id == event_id:
@@ -91,6 +133,9 @@ class SettlementPage(QWidget):
         self.event_id = event_id
         self.refresh()
         self._loaded_event_id = event_id
+
+    def export_pdf(self):
+        export_pdf_from_page(self, self.db, self.event_id, "settlement", export_settlement_pdf)
 
     def invalidate(self):
         self._loaded_event_id = None
@@ -130,7 +175,10 @@ class SettlementPage(QWidget):
         self.budget.blockSignals(False); self.tax_mode.blockSignals(False)
         for key in ("budget", "supply", "vat", "total"): self.cards[key].set_value(money(summary[key]))
         difference = summary["difference"]
-        difference_text = "예산 미입력" if difference is None else ("일치" if difference == 0 else f"{money(abs(difference))} {'남음' if difference > 0 else '초과'}")
+        if difference is None:
+            difference_text = "VAT 기준 선택 필요" if summary["budget"] else "예산 미입력"
+        else:
+            difference_text = "일치" if difference == 0 else f"{money(abs(difference))} {'남음' if difference > 0 else '부족'}"
         self.cards["difference"].set_value(difference_text)
         messages = []
         if event["budget"] and event["budget_tax_mode"] == "UNSET": messages.append("입력 예산이 VAT 포함인지 별도인지 선택하세요.")
@@ -198,7 +246,7 @@ class SettlementPage(QWidget):
         self.table.setRowHeight(row, 50)
 
     def _open_cell_editor(self, row: int, column: int):
-        if self.loading or column not in {3, 4, 5, 7, 10, 11}:
+        if self.loading or column not in {2, 3, 4, 5, 7, 10, 11}:
             return
         cell = self.table.item(row, column)
         if cell is None:
@@ -207,7 +255,12 @@ class SettlementPage(QWidget):
         if task_id is None or int(task_id) not in self._items:
             return
         task_id = int(task_id); item = self._items[task_id]
-        if column == 3:
+        if column == 2:
+            self.table.open_text_editor(
+                row, column, item["name"],
+                lambda value: self._commit_item_name(task_id, value),
+            )
+        elif column == 3:
             self.table.open_number_editor(row, column, item["quantity"], lambda value: self._commit_value(task_id, column, "quantity", value))
         elif column == 4:
             choices = [(unit, unit) for unit in load_master_choice_catalog(self.db).units]
@@ -227,6 +280,15 @@ class SettlementPage(QWidget):
         else:
             self.table.open_text_editor(row, column, item["note"] or "",
                                         lambda value: self._commit_value(task_id, column, "note", value))
+
+    def _commit_item_name(self, task_id: int, value: str):
+        if not value:
+            QMessageBox.warning(self, "입력 확인", "항목명은 비워둘 수 없습니다.")
+            return False
+        self.service.update_task(task_id, name=value)
+        self._items[task_id]["name"] = value
+        self.table.item(self._task_rows[task_id], 2).setText(value)
+        self.changed.emit(self.event_id or 0)
 
     def _commit_value(self, task_id: int, column: int, field: str, value):
         self.service.update_task(task_id, **{field: value})

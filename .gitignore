@@ -13,12 +13,17 @@
 03_Program/ui-*.png
 03_Program/EventFlow_Current/
 03_Program/EventFlow_Installer/
+/output/
+/tmp/
 
 # Local data and temporary files
 *.db
 *.db-wal
 *.db-shm
 *.log
+.env
+.env.*
+!.env.example
 .DS_Store
 Thumbs.db
 

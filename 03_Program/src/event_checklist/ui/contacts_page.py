@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter, QTabWidget, QTableWidget,
+    QAbstractItemView, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -37,9 +37,40 @@ class ContactsPage(QWidget):
         table = FastEditableTable(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
         configure_data_table(table, widths)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.cellDoubleClicked.connect(
+            lambda row, column, source=table: self._open_contact_editor(source, row, column)
+        )
         return table
+
+    def _open_contact_editor(self, table, row: int, column: int):
+        cell = table.item(row, column)
+        if cell is None:
+            return
+        item_id = int(cell.data(Qt.ItemDataRole.UserRole))
+        if table is self.vendor_table:
+            fields = {0: "name", 1: "role_note"}
+        else:
+            fields = {0: "name", 1: "job_title", 2: "phone", 3: "role_note"}
+        field = fields.get(column)
+        if field is None:
+            return
+
+        def commit(value):
+            if field == "name" and not value:
+                QMessageBox.warning(self, "입력 확인", "이름은 비워둘 수 없습니다.")
+                return False
+            try:
+                self.db.execute(f"UPDATE contacts SET {field}=? WHERE id=?", (value, item_id))
+            except Exception as exc:
+                QMessageBox.warning(self, "수정 실패", f"연락처를 수정하지 못했습니다.\n\n{exc}")
+                return False
+            cell.setText(value)
+            self.changed.emit()
+
+        table.open_text_editor(row, column, cell.text(), commit)
 
     def _companies_tab(self):
         page = QWidget()
@@ -56,8 +87,8 @@ class ContactsPage(QWidget):
         actions.addWidget(add_person)
         layout.addLayout(actions)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.vendor_table = self._table(["업체", "연락처", "분야"], [190, 150, 210])
-        self.company_people = self._table(["담당자", "연락처", "역할"], [180, 150, 220])
+        self.vendor_table = self._table(["업체명", "업종"], [240, 310])
+        self.company_people = self._table(["담당자", "직책", "연락처", "역할"], [150, 130, 160, 220])
         splitter.addWidget(self.vendor_table)
         splitter.addWidget(self.company_people)
         splitter.setSizes([520, 620])
@@ -82,7 +113,7 @@ class ContactsPage(QWidget):
         actions.addWidget(fit)
         actions.addWidget(add)
         layout.addLayout(actions)
-        self.freelancer_table = self._table(["이름", "연락처", "역할 / 분야"], [220, 200, 420])
+        self.freelancer_table = self._table(["이름", "직책", "연락처", "역할"], [190, 150, 190, 310])
         layout.addWidget(self.freelancer_table, 1)
         add.clicked.connect(lambda: self.add_contact("PERSON", None))
         delete.clicked.connect(lambda: self.delete_selected(self.freelancer_table, "PERSON"))
@@ -91,17 +122,20 @@ class ContactsPage(QWidget):
 
     def refresh(self):
         vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name")
-        self._fill(self.vendor_table, vendors)
+        self._fill(self.vendor_table, vendors, vendor=True)
         freelancers = self.db.query("SELECT * FROM contacts WHERE kind='PERSON' AND company_id IS NULL ORDER BY name")
         self._fill(self.freelancer_table, freelancers)
         if vendors and self.vendor_table.currentRow() < 0:
             self.vendor_table.selectRow(0)
         self._refresh_company_people()
 
-    def _fill(self, table, rows):
+    def _fill(self, table, rows, *, vendor: bool = False):
         table.setRowCount(len(rows))
         for r, item in enumerate(rows):
-            for c, value in enumerate([item["name"], item["phone"], item["role_note"]]):
+            values = [item["name"], item["role_note"]] if vendor else [
+                item["name"], item["job_title"], item["phone"], item["role_note"],
+            ]
+            for c, value in enumerate(values):
                 cell = QTableWidgetItem(value or "")
                 cell.setData(Qt.ItemDataRole.UserRole, item["id"])
                 table.setItem(r, c, cell)
@@ -120,11 +154,11 @@ class ContactsPage(QWidget):
         dialog = ContactDialog(kind, self)
         if not dialog.exec():
             return
-        name, phone, note = dialog.values()
+        values = dialog.values()
         try:
             self.db.execute(
-                "INSERT INTO contacts(kind,name,phone,role_note,company_id) VALUES (?,?,?,?,?)",
-                (kind, name, phone, note, company_id),
+                "INSERT INTO contacts(kind,name,phone,job_title,role_note,company_id) VALUES (?,?,?,?,?,?)",
+                (kind, values["name"], values["phone"], values["job_title"], values["role_note"], company_id),
             )
         except Exception as exc:
             QMessageBox.warning(self, "추가 실패", f"연락처를 추가하지 못했습니다.\n\n{exc}")

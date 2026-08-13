@@ -4,9 +4,9 @@ from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QButtonGroup, QCheckBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTextEdit, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QRadioButton, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .widgets import (
@@ -14,14 +14,35 @@ from .widgets import (
     configure_money_spin, configure_quantity_spin,
 )
 
+KEEP_ASSIGNMENT = "__KEEP_ASSIGNMENT__"
+
+
+def person_display_label(person) -> str:
+    """Return a person label without repeating the already-visible company name."""
+    parts = [str(person["name"] or "").strip()]
+    for field in ("job_title", "role_note"):
+        try:
+            value = str(person[field] or "").strip()
+        except (IndexError, KeyError):
+            value = ""
+        if value:
+            parts.append(value)
+    return " · ".join(part for part in parts if part)
+
 
 class EventDialog(QDialog):
     def __init__(self, masters, event=None, vendors=(), freelancers=(),
-                 selected_vendor_ids=(), selected_freelancer_ids=(), parent=None):
+                 selected_vendor_ids=(), selected_freelancer_ids=(), previous_events=(),
+                 previous_task_loader=None, parent=None):
         super().__init__(parent)
         self.masters = list(masters)
         # QObject.event() is a native Qt virtual method. Never shadow it with data.
         self.event_record = event
+        self.previous_events = list(previous_events)
+        self.previous_task_loader = previous_task_loader
+        self.source_event_id: int | None = None
+        self.copy_settlement_prices = False
+        self._tree_source = "masters"
         self.setWindowTitle("행사 수정" if event else "새 행사")
         self.resize(900 if event else 1180, 720)
         root = QVBoxLayout(self)
@@ -115,12 +136,18 @@ class EventDialog(QDialog):
             item_layout = QVBoxLayout(item_panel)
             item_layout.setContentsMargins(16, 16, 16, 16)
             item_layout.setSpacing(10)
-            section = QLabel("필요한 기본 항목")
+            section = QLabel("행사 항목 선택")
             section.setObjectName("SectionTitle")
             row.addWidget(section)
             row.addStretch()
+            self.previous_button = QPushButton("이전 행사에서 가져오기")
+            self.previous_button.setEnabled(bool(self.previous_events and self.previous_task_loader))
+            self.previous_button.setToolTip(
+                "이전 행사의 항목을 가져옵니다. 담당자, 업체, 일정과 진행상태는 복사하지 않습니다."
+            )
             all_button = QPushButton("전체 선택")
             none_button = QPushButton("전체 해제")
+            row.addWidget(self.previous_button)
             row.addWidget(all_button)
             row.addWidget(none_button)
             item_layout.addLayout(row)
@@ -129,6 +156,7 @@ class EventDialog(QDialog):
             self.tree.setHeaderLabels(["분류 / 항목"])
             self.tree.setColumnWidth(0, 420)
             self._populate_tree()
+            self.previous_button.clicked.connect(self._open_previous_event_import)
             all_button.clicked.connect(lambda: self._set_all(Qt.CheckState.Checked))
             none_button.clicked.connect(lambda: self._set_all(Qt.CheckState.Unchecked))
             item_layout.addWidget(self.tree, 1)
@@ -147,6 +175,11 @@ class EventDialog(QDialog):
         root.addWidget(buttons)
 
     def _populate_tree(self) -> None:
+        self.tree.clear()
+        self._tree_source = "masters"
+        self.source_event_id = None
+        self.copy_settlement_prices = False
+        self.tree.setHeaderLabels(["분류 / 항목"])
         parents: dict[tuple[str, str], QTreeWidgetItem] = {}
         major_items: dict[str, QTreeWidgetItem] = {}
         for item in self.masters:
@@ -170,6 +203,50 @@ class EventDialog(QDialog):
             child.setCheckState(0, Qt.CheckState.Checked)
         self.tree.expandToDepth(1)
 
+    def _open_previous_event_import(self) -> None:
+        chooser = PreviousEventImportDialog(self.previous_events, self)
+        if not chooser.exec():
+            return
+        source_event_id, copy_prices = chooser.values()
+        tasks = list(self.previous_task_loader(source_event_id))
+        if not tasks:
+            QMessageBox.information(self, "가져올 항목 없음", "선택한 행사에는 가져올 항목이 없습니다.")
+            return
+        self._populate_previous_tree(tasks, source_event_id, copy_prices)
+
+    def _populate_previous_tree(self, tasks, source_event_id: int, copy_prices: bool) -> None:
+        self.tree.clear()
+        self._tree_source = "previous"
+        self.source_event_id = int(source_event_id)
+        self.copy_settlement_prices = bool(copy_prices)
+        mode = "항목 + 정산 단가" if copy_prices else "항목만 · 단가 0원"
+        source_name = next(
+            (row["name"] for row in self.previous_events if int(row["id"]) == self.source_event_id),
+            "이전 행사",
+        )
+        self.tree.setHeaderLabels([f"{source_name}  |  {mode}"])
+        parents: dict[tuple[str, str], QTreeWidgetItem] = {}
+        major_items: dict[str, QTreeWidgetItem] = {}
+        for task in tasks:
+            major, minor = task["major"], task["minor"]
+            major_item = major_items.get(major)
+            if major_item is None:
+                major_item = QTreeWidgetItem(self.tree, [major])
+                major_item.setFlags(major_item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
+                major_item.setCheckState(0, Qt.CheckState.Checked)
+                major_items[major] = major_item
+            parent = parents.get((major, minor))
+            if parent is None:
+                parent = QTreeWidgetItem(major_item, [minor])
+                parent.setFlags(parent.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
+                parent.setCheckState(0, Qt.CheckState.Checked)
+                parents[(major, minor)] = parent
+            child = QTreeWidgetItem(parent, [task["name"]])
+            child.setData(0, Qt.ItemDataRole.UserRole, int(task["id"]))
+            child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            child.setCheckState(0, Qt.CheckState.Checked)
+        self.tree.expandToDepth(1)
+
     def _set_all(self, state: Qt.CheckState) -> None:
         for i in range(self.tree.topLevelItemCount()):
             self.tree.topLevelItem(i).setCheckState(0, state)
@@ -186,6 +263,15 @@ class EventDialog(QDialog):
                 result.append(int(item_id))
             iterator += 1
         return result
+
+    def import_values(self) -> dict:
+        if self._tree_source != "previous":
+            return {}
+        return {
+            "source_event_id": self.source_event_id,
+            "source_task_ids": self.selected_ids(),
+            "copy_settlement_prices": self.copy_settlement_prices,
+        }
 
     def values(self) -> dict:
         start = self.start_edit.date().toPython()
@@ -205,11 +291,17 @@ class EventDialog(QDialog):
     @staticmethod
     def _populate_check_list(widget: QListWidget, rows, selected: set[int], show_role: bool = False) -> None:
         for row in rows:
-            role = (row["role_note"] or "").strip() if show_role else ""
-            label = f"{row['name']}  ·  {role}" if role else row["name"]
+            label = person_display_label(row) if show_role else row["name"]
             item = QListWidgetItem(label)
             if show_role:
-                item.setToolTip(f"이름: {row['name']}\n역할 / 분야: {role or '미입력'}")
+                try:
+                    job_title = (row["job_title"] or "").strip()
+                except (IndexError, KeyError):
+                    job_title = ""
+                role = (row["role_note"] or "").strip()
+                item.setToolTip(
+                    f"이름: {row['name']}\n직책: {job_title or '미입력'}\n역할: {role or '미입력'}"
+                )
             item.setData(Qt.ItemDataRole.UserRole, int(row["id"]))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if int(row["id"]) in selected else Qt.CheckState.Unchecked)
@@ -240,12 +332,58 @@ class EventDialog(QDialog):
             self.budget_tax_mode.setFocus()
             return
         if self.tree is not None and not self.selected_ids():
-            QMessageBox.warning(self, "입력 확인", "하나 이상의 기본 항목을 선택하세요.")
+            QMessageBox.warning(self, "입력 확인", "하나 이상의 항목을 선택하세요.")
             return
         self.accept()
 
 
 from PySide6.QtWidgets import QTreeWidgetItemIterator  # noqa: E402
+
+
+class PreviousEventImportDialog(QDialog):
+    def __init__(self, events, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("이전 행사에서 가져오기")
+        self.resize(520, 300)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        title = QLabel("기준이 될 이전 행사를 선택하세요")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+        self.event_combo = AppComboBox()
+        for event in events:
+            period = event["start_date"]
+            if event["end_date"]:
+                period += f" ~ {event['end_date']}"
+            self.event_combo.addItem(f"{event['name']}  ·  {period}", int(event["id"]))
+        layout.addWidget(self.event_combo)
+
+        mode_title = QLabel("가져오기 방식")
+        mode_title.setObjectName("FieldLabel")
+        layout.addWidget(mode_title)
+        self.item_only = QRadioButton("항목만 가져오기")
+        self.item_only.setToolTip("항목 구조를 가져오고 단가는 모두 0원으로 시작합니다.")
+        self.with_settlement = QRadioButton("항목과 정산 가져오기")
+        self.with_settlement.setToolTip("항목 구조와 이전 행사의 단가를 가져옵니다.")
+        self.item_only.setChecked(True)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.addButton(self.item_only)
+        self.mode_group.addButton(self.with_settlement)
+        layout.addWidget(self.item_only)
+        layout.addWidget(self.with_settlement)
+        note = QLabel("두 방식 모두 수량은 1, 진행상태는 미착수, 작업 일정과 담당자·업체는 미지정으로 생성됩니다.")
+        note.setWordWrap(True)
+        note.setObjectName("InfoGuide")
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("항목 불러오기")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[int, bool]:
+        return int(self.event_combo.currentData()), self.with_settlement.isChecked()
 
 
 class MasterImportDialog(QDialog):
@@ -381,10 +519,15 @@ class ContactDialog(QDialog):
         form = QFormLayout()
         self.name_edit = QLineEdit()
         self.phone_edit = QLineEdit()
+        self.job_title_edit = QLineEdit()
         self.note_edit = QLineEdit()
         form.addRow("이름 *" if kind == "PERSON" else "업체명 *", self.name_edit)
-        form.addRow("연락처", self.phone_edit)
-        form.addRow("역할 / 분야", self.note_edit)
+        if kind == "PERSON":
+            form.addRow("직책", self.job_title_edit)
+            form.addRow("연락처", self.phone_edit)
+            form.addRow("역할", self.note_edit)
+        else:
+            form.addRow("업종", self.note_edit)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
         buttons.accepted.connect(self._accept)
@@ -393,12 +536,18 @@ class ContactDialog(QDialog):
 
     def _accept(self):
         if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "입력 확인", "이름을 입력하세요.")
+            target = "이름" if self.kind == "PERSON" else "업체명"
+            QMessageBox.warning(self, "입력 확인", f"{target}을 입력하세요.")
             return
         self.accept()
 
     def values(self):
-        return self.name_edit.text().strip(), self.phone_edit.text().strip(), self.note_edit.text().strip()
+        return {
+            "name": self.name_edit.text().strip(),
+            "phone": self.phone_edit.text().strip() if self.kind == "PERSON" else "",
+            "job_title": self.job_title_edit.text().strip() if self.kind == "PERSON" else "",
+            "role_note": self.note_edit.text().strip(),
+        }
 
 
 class MasterItemDialog(QDialog):
@@ -507,6 +656,86 @@ class MasterItemDialog(QDialog):
             "default_vendor_id": self.vendor.currentData(),
             "default_assignee_id": self.assignee.currentData(),
         }
+
+
+class BulkAssignmentDialog(QDialog):
+    def __init__(self, event, vendors, people, selected_count: int, parent=None):
+        super().__init__(parent)
+        self.event_record = event
+        self.vendors = list(vendors)
+        self.people = list(people)
+        self.setWindowTitle("선택 행 담당 일괄 지정")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        title = QLabel(f"선택한 {selected_count}개 항목에 일괄 적용")
+        title.setObjectName("SectionTitle")
+        guide = QLabel("변경할 항목만 선택하세요. ‘변경 안 함’은 기존 값을 유지합니다.")
+        guide.setObjectName("InfoGuide"); guide.setWordWrap(True)
+        layout.addWidget(title); layout.addWidget(guide)
+
+        form = QFormLayout()
+        self.pm_assignee = AppComboBox()
+        self.pm_assignee.addItem("변경 안 함", KEEP_ASSIGNMENT)
+        self.pm_assignee.addItem("미지정", None)
+        pm_vendor_id = event["pm_vendor_id"] if event else None
+        for person in self.people:
+            if pm_vendor_id and person["company_id"] == pm_vendor_id:
+                self.pm_assignee.addItem(person_display_label(person), person["id"])
+
+        self.vendor = AppComboBox()
+        self.vendor.addItem("변경 안 함", KEEP_ASSIGNMENT)
+        self.vendor.addItem("미지정", None)
+        for vendor in self.vendors:
+            self.vendor.addItem(vendor["name"], vendor["id"])
+        self.vendor.currentIndexChanged.connect(self._reload_vendor_people)
+
+        self.vendor_assignee = AppComboBox()
+        self._reload_vendor_people()
+        form.addRow("담당자(PM)", self.pm_assignee)
+        form.addRow("업체", self.vendor)
+        form.addRow("업체담당자", self.vendor_assignee)
+        layout.addLayout(form)
+
+        note = QLabel("업체를 변경하면 업체담당자는 선택한 업체의 담당자만 표시됩니다.")
+        note.setObjectName("Muted"); note.setWordWrap(True); layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _reload_vendor_people(self, *_args):
+        vendor_id = self.vendor.currentData()
+        self.vendor_assignee.blockSignals(True)
+        self.vendor_assignee.clear()
+        if vendor_id == KEEP_ASSIGNMENT:
+            self.vendor_assignee.addItem("변경 안 함", KEEP_ASSIGNMENT)
+            self.vendor_assignee.setEnabled(False)
+        else:
+            self.vendor_assignee.addItem("미지정", None)
+            if vendor_id is not None:
+                for person in self.people:
+                    if person["company_id"] == vendor_id:
+                        self.vendor_assignee.addItem(person_display_label(person), person["id"])
+            self.vendor_assignee.setEnabled(vendor_id is not None)
+        self.vendor_assignee.blockSignals(False)
+
+    def values(self):
+        result = {}
+        pm_assignee_id = self.pm_assignee.currentData()
+        vendor_id = self.vendor.currentData()
+        if pm_assignee_id != KEEP_ASSIGNMENT:
+            result["pm_assignee_id"] = pm_assignee_id
+        if vendor_id != KEEP_ASSIGNMENT:
+            result["vendor_id"] = vendor_id
+            result["assignee_id"] = self.vendor_assignee.currentData()
+        return result
+
+    def _accept(self):
+        if not self.values():
+            QMessageBox.information(self, "지정할 내용", "변경할 담당자 또는 업체를 선택하세요.")
+            return
+        self.accept()
 
 
 class TaskDetailsDialog(QDialog):

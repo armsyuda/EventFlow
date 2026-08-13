@@ -6,8 +6,8 @@ from time import perf_counter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtWidgets import QApplication, QCalendarWidget, QLineEdit, QListWidget, QMessageBox, QPushButton, QStyleOptionViewItem
+from PySide6.QtCore import QItemSelectionModel, QRect, Qt
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QCalendarWidget, QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QStyleOptionViewItem, QTableWidgetSelectionRange
 from PySide6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox
 from PySide6.QtTest import QTest
 
@@ -15,15 +15,22 @@ from event_checklist import __version__
 from event_checklist.database import Database
 from event_checklist.choices import load_master_choice_catalog
 from event_checklist.services import EventService
+from event_checklist.pdf_export import PdfOptions
 from event_checklist.ui.calendar_page import CalendarPage, CalendarTaskCard
 from event_checklist.ui.contacts_page import ContactsPage
 from event_checklist.ui.dashboard_page import EventCard
-from event_checklist.ui.dialogs import CustomTaskDialog, EventDialog, MasterItemDialog
+from event_checklist.ui.dialogs import (
+    BulkAssignmentDialog, ContactDialog, CustomTaskDialog, EventDialog, MasterItemDialog,
+    PreviousEventImportDialog,
+)
 from event_checklist.ui.main_window import MainWindow
 from event_checklist.ui.events_page import EventsPage, STATUSES
+from event_checklist.ui.excel_export_dialog import ExcelExportDialog
 from event_checklist.ui.master_page import MasterPage
+from event_checklist.ui.pdf_export_dialog import CalendarPdfExportDialog, ChecklistPdfExportDialog, PdfExportDialog
 from event_checklist.ui.month_timeline import MonthTimeline
 from event_checklist.ui.settlement_page import SettlementPage
+from event_checklist.ui.settings_page import SettingsPage
 from event_checklist.ui.startup_splash import StartupSplash
 from event_checklist.theme import ComboPopupPolisher, InteractionCursorPolisher, application_stylesheet
 from event_checklist.ui.widgets import (
@@ -260,6 +267,8 @@ def test_settings_contacts_refresh_checklist_choices_and_vendor_precedes_assigne
     second_person = db.execute(
         "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','같은 이름',?)", (second_vendor,)
     ).lastrowid
+    db.execute("UPDATE contacts SET job_title='실장',role_note='무대 운영' WHERE id=?", (first_person,))
+    db.execute("UPDATE contacts SET job_title='팀장',role_note='영상 관리' WHERE id=?", (second_person,))
     window.settings.contacts_changed.emit()
     QTest.qWait(100)
 
@@ -271,13 +280,165 @@ def test_settings_contacts_refresh_checklist_choices_and_vendor_precedes_assigne
     assert {first_vendor, second_vendor} <= {row["id"] for row in window.events._vendors}
     assert {first_person, second_person} <= {row["id"] for row in window.events._all_assignees}
     labels = {window.events._assignee_label(row) for row in window.events._all_assignees if row["name"] == "같은 이름"}
-    assert labels == {"같은 이름 · 첫 업체", "같은 이름 · 둘째 업체"}
+    assert labels == {"같은 이름 · 실장 · 무대 운영", "같은 이름 · 팀장 · 영상 관리"}
 
     window.events._open_cell_editor(0, 9)
     editor = window.events.table.cellWidget(0, 9)
     assert editor.findData(first_vendor) >= 0 and editor.findData(second_vendor) >= 0
     window.events.table.close_cell_editor()
     window.close(); db.close()
+
+
+def test_checklist_header_is_compacted_into_two_rows(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    previous_style = app.styleSheet(); app.setStyleSheet(application_stylesheet())
+    db = Database(tmp_path / "checklist-actions.db")
+    page = EventsPage(EventService(db), db)
+    page.resize(1400, 800); page.show(); app.processEvents()
+
+    assert page.import_button.property("quiet") is True
+    assert page.edit_event_button.property("quiet") is True
+    assert page.removed_toggle.property("quiet") is True
+    assert page.removed_toggle.isCheckable()
+    assert page.add_button.property("primary") is True
+    assert page.remove_button.property("attention") is True
+    assert page.import_button.x() < page.edit_event_button.x() < page.fit_button.x()
+    top_centers = [
+        button.y() + button.height() // 2
+        for button in (page.import_button, page.edit_event_button, page.fit_button)
+    ]
+    assert max(top_centers) - min(top_centers) <= 1
+    assert page.search.y() > page.import_button.y()
+    action_centers = [
+        widget.y() + widget.height() // 2
+        for widget in (
+            page.search, page.status_filter, page.major_filter, page.bulk_assign_button,
+            page.add_button, page.remove_button, page.removed_toggle, page.pdf_button,
+        )
+    ]
+    assert max(action_centers) - min(action_centers) <= 1
+    assert page.summary.y() < page.search.y()
+    action_heights = {
+        page.bulk_assign_button.height(), page.add_button.height(), page.remove_button.height(),
+        page.removed_toggle.height(), page.pdf_button.height(),
+    }
+    assert action_heights == {44}
+    page.close(); db.close(); app.setStyleSheet(previous_style)
+
+
+def test_pdf_export_uses_icon_only_buttons_and_a4_portrait_defaults(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "pdf-buttons.db")
+    service = EventService(db)
+    checklist = EventsPage(service, db)
+    settlement = SettlementPage(service, db)
+    for button in (checklist.pdf_button, settlement.pdf_button):
+        assert button.text() == ""
+        assert not button.icon().isNull()
+        assert button.toolTip() == "PDF로 내보내기"
+        assert button.accessibleName() == "PDF로 내보내기"
+    assert checklist.pdf_button.size().width() == checklist.pdf_button.size().height() == 44
+    assert settlement.pdf_button.size().width() == settlement.pdf_button.size().height() == 42
+    dialog = PdfExportDialog()
+    assert dialog.options() == PdfOptions("A4", "PORTRAIT")
+    dialog.a3.setChecked(True); dialog.landscape.setChecked(True)
+    assert dialog.options() == PdfOptions("A3", "LANDSCAPE")
+    dialog.close(); settlement.close(); checklist.close(); db.close()
+
+
+def test_excel_export_dialog_selects_document_scope_and_all_page_formats(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "excel-dialog.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY id LIMIT 2")]
+    event_id = service.create_event("엑셀 테스트 행사", date(2026, 9, 1), date(2026, 9, 3), master_ids)
+    tasks = db.query("SELECT id FROM event_tasks WHERE event_id=? ORDER BY id", (event_id,))
+    db.execute("UPDATE event_tasks SET major='시스템',minor='음향' WHERE id=?", (tasks[0]["id"],))
+    db.execute("UPDATE event_tasks SET major='시설',minor='안전' WHERE id=?", (tasks[1]["id"],))
+    dialog = ExcelExportDialog(db)
+    assert dialog.values() == {
+        "event_id": event_id, "kind": "checklist", "options": PdfOptions("A4", "PORTRAIT"),
+        "major": "", "minor": "",
+    }
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MINOR"))
+    dialog.major_combo.setCurrentIndex(dialog.major_combo.findData("시스템"))
+    assert dialog.values()["major"] == "시스템"
+    assert dialog.values()["minor"] == "음향"
+    dialog.a3.setChecked(True); dialog.landscape.setChecked(True)
+    assert dialog.values()["options"] == PdfOptions("A3", "LANDSCAPE")
+    dialog.settlement.setChecked(True)
+    assert dialog.values()["kind"] == "settlement"
+    assert dialog.values()["major"] == dialog.values()["minor"] == ""
+    assert not dialog.scope_panel.isEnabled()
+    dialog.close(); db.close()
+
+
+def test_settings_export_section_has_excel_only(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "settings-export.db")
+    page = SettingsPage(db, tmp_path / "backups")
+    button_texts = {button.text() for button in page.findChildren(QPushButton)}
+    assert "Excel 내보내기" in button_texts
+    assert all("CSV" not in text for text in button_texts)
+    assert all("CSV" not in label.text() for label in page.findChildren(QLabel))
+    page.close(); db.close()
+
+
+def test_calendar_pdf_dialog_filters_current_event_categories():
+    app = QApplication.instance() or QApplication([])
+    dialog = CalendarPdfExportDialog([("행사", ["연출", "공연"]), ("운영", ["안전"])])
+    assert dialog.options() == PdfOptions("A4", "LANDSCAPE")
+    assert dialog.filters() == ("", "")
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MAJOR"))
+    dialog.major_combo.setCurrentIndex(dialog.major_combo.findData("운영"))
+    assert dialog.filters() == ("운영", "")
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MINOR"))
+    assert dialog.filters() == ("운영", "안전")
+    dialog.close()
+
+
+def test_checklist_pdf_dialog_selects_all_or_one_major_category():
+    app = QApplication.instance() or QApplication([])
+    dialog = ChecklistPdfExportDialog(["시스템", "시설", "행사"])
+    assert dialog.options() == PdfOptions("A4", "PORTRAIT")
+    assert dialog.major_filter() == ""
+    dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData("MAJOR"))
+    dialog.major_combo.setCurrentIndex(dialog.major_combo.findData("시설"))
+    assert dialog.major_filter() == "시설"
+    dialog.close()
+
+
+def test_contact_dialog_separates_person_title_role_and_vendor_industry(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    person = ContactDialog("PERSON")
+    person.name_edit.setText("이유경")
+    person.job_title_edit.setText("실장")
+    person.phone_edit.setText("010-1111-2222")
+    person.note_edit.setText("현장 총괄")
+    assert person.values() == {
+        "name": "이유경", "job_title": "실장", "phone": "010-1111-2222", "role_note": "현장 총괄",
+    }
+    person_labels = {label.text() for label in person.findChildren(QLabel)}
+    assert {"이름 *", "직책", "연락처", "역할"} <= person_labels
+
+    vendor = ContactDialog("VENDOR")
+    vendor.name_edit.setText("최작기획")
+    vendor.phone_edit.setText("저장되면 안 되는 번호")
+    vendor.note_edit.setText("행사 기획")
+    assert vendor.values() == {
+        "name": "최작기획", "job_title": "", "phone": "", "role_note": "행사 기획",
+    }
+    vendor_labels = {label.text() for label in vendor.findChildren(QLabel)}
+    assert {"업체명 *", "업종"} <= vendor_labels
+    assert "연락처" not in vendor_labels
+
+    db = Database(tmp_path / "contact-columns.db")
+    page = ContactsPage(db)
+    assert [page.vendor_table.horizontalHeaderItem(i).text() for i in range(2)] == ["업체명", "업종"]
+    assert [page.company_people.horizontalHeaderItem(i).text() for i in range(4)] == [
+        "담당자", "직책", "연락처", "역할",
+    ]
+    person.close(); vendor.close(); page.close(); db.close()
 
 
 def test_title_bar_keeps_detailed_update_failure_reason(tmp_path):
@@ -345,6 +506,90 @@ def test_pm_and_vendor_contacts_are_filtered_and_phone_is_shown(tmp_path):
                                              for row in page._assignees_by_vendor[work_vendor]]
     page._commit_vendor_contact(0, page._current_tasks[0], work_person, contact_choices)
     assert page.table.item(0, 11).text() == "010-3333-4444"
+    page.close(); db.close()
+
+
+def test_bulk_assignment_dialog_filters_pm_and_vendor_people_and_tables_select_multiple_rows(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "bulk-assignment-ui.db"); service = EventService(db)
+    pm_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','일괄 PM')").lastrowid
+    work_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','일괄 업체')").lastrowid
+    other_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','제외 업체')").lastrowid
+    pm_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','PM 사람',?)", (pm_vendor,)
+    ).lastrowid
+    work_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','업체 사람',?)", (work_vendor,)
+    ).lastrowid
+    other_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','제외 사람',?)", (other_vendor,)
+    ).lastrowid
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")
+    event_id = service.create_event(
+        "일괄 선택 UI", date.today(), None, [row["id"] for row in masters], pm_vendor_id=pm_vendor,
+    )
+    event = service.get_event(event_id)
+    vendors = db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name,id")
+    people = db.query("SELECT * FROM contacts WHERE kind='PERSON' ORDER BY name,id")
+    dialog = BulkAssignmentDialog(event, vendors, people, 2)
+    assert dialog.pm_assignee.findData(pm_person) >= 0
+    assert dialog.pm_assignee.findData(work_person) < 0
+    dialog.vendor.setCurrentIndex(dialog.vendor.findData(work_vendor)); app.processEvents()
+    assert dialog.vendor_assignee.findData(work_person) >= 0
+    assert dialog.vendor_assignee.findData(pm_person) < 0
+    assert dialog.vendor_assignee.findData(other_person) < 0
+    dialog.pm_assignee.setCurrentIndex(dialog.pm_assignee.findData(pm_person))
+    dialog.vendor_assignee.setCurrentIndex(dialog.vendor_assignee.findData(work_person))
+    assert dialog.values() == {
+        "pm_assignee_id": pm_person, "vendor_id": work_vendor, "assignee_id": work_person,
+    }
+
+    flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+    checklist = EventsPage(service, db); checklist.set_event(event_id)
+    checklist.table.selectionModel().select(checklist.table.model().index(0, 0), flags)
+    checklist.table.selectionModel().select(checklist.table.model().index(1, 0), flags)
+    assert len(checklist._selected_task_ids()) == 2
+
+    settlement = SettlementPage(service, db); settlement.set_event(event_id)
+    rows = list(settlement._task_rows.values())[:2]
+    for row in rows:
+        settlement.table.selectionModel().select(settlement.table.model().index(row, 0), flags)
+    assert len(settlement._selected_task_ids()) == 2
+    dialog.close(); settlement.close(); checklist.close(); db.close()
+
+
+def test_bulk_assignment_applies_to_every_row_touched_by_a_selected_cell_range(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "bulk-cell-range.db"); service = EventService(db)
+    vendor_id = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','범위 선택 업체')").lastrowid
+    person_id = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','범위 선택 담당',?)", (vendor_id,)
+    ).lastrowid
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 4")
+    event_id = service.create_event("셀 범위 일괄 지정", date.today(), None, [row["id"] for row in masters])
+    page = EventsPage(service, db); page.set_event(event_id)
+    target_ids = [int(page._current_tasks[row]["id"]) for row in range(3)]
+
+    # 항목 열의 셀 3개만 드래그한 상황을 재현한다. 완전한 행 선택으로
+    # 판정되지 않더라도 세 셀이 닿은 세 행은 모두 일괄 변경 대상이어야 한다.
+    page.table.clearSelection()
+    page.table.setRangeSelected(QTableWidgetSelectionRange(0, 3, 2, 3), True)
+    assert page._selected_task_ids() == target_ids
+    monkeypatch.setattr(BulkAssignmentDialog, "exec", lambda _dialog: True)
+    monkeypatch.setattr(
+        BulkAssignmentDialog, "values",
+        lambda _dialog: {"vendor_id": vendor_id, "assignee_id": person_id},
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: None)
+    page.bulk_assign_button.click(); app.processEvents()
+
+    rows = db.query(
+        "SELECT vendor_id,assignee_id FROM event_tasks WHERE id IN (?,?,?) ORDER BY id", target_ids,
+    )
+    assert len(rows) == 3
+    assert all((row["vendor_id"], row["assignee_id"]) == (vendor_id, person_id) for row in rows)
+    untouched = db.one("SELECT vendor_id,assignee_id FROM event_tasks WHERE id=?", (page._current_tasks[3]["id"],))
+    assert tuple(untouched) == (None, None)
     page.close(); db.close()
 
 
@@ -574,6 +819,9 @@ def test_checklist_and_master_editors_stay_inside_rows_and_show_group_boundaries
         assert table.cellWidget(0, editor_column) is None
         QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=cell_rect.center())
         app.processEvents()
+        assert table.cellWidget(0, editor_column) is None
+        QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=cell_rect.center())
+        app.processEvents()
         editor_rect = table.cellWidget(0, editor_column).geometry()
         assert editor_rect.top() >= cell_rect.top()
         assert editor_rect.bottom() <= cell_rect.bottom()
@@ -641,6 +889,123 @@ def test_editable_table_combo_stays_open_when_popup_moves_line_edit_focus():
     table.close()
 
 
+def test_dismissed_dropdown_closes_without_committing_and_single_click_only_selects(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "double-click-edit.db"); service = EventService(db)
+    master_id = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")["id"]
+    event_id = service.create_event("더블클릭 편집", date.today(), date.today(), [master_id])
+    page = EventsPage(service, db); page.set_event(event_id); page.resize(1500, 700); page.show()
+    app.processEvents()
+
+    status_rect = page.table.visualRect(page.table.model().index(0, 5))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=status_rect.center())
+    app.processEvents()
+    assert page.table.currentRow() == 0 and page.table.currentColumn() == 5
+    assert page.table.cellWidget(0, 5) is None
+
+    QTest.mouseDClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=status_rect.center())
+    app.processEvents()
+    editor = page.table.cellWidget(0, 5)
+    assert isinstance(editor, AppComboBox)
+    original = page._current_tasks[0]["status"]
+    page.table.setCurrentCell(0, 4)
+    app.processEvents()
+    assert page.table.cellWidget(0, 5) is None
+    assert page._current_tasks[0]["status"] == original
+    assert db.one("SELECT status FROM event_tasks WHERE event_id=?", (event_id,))["status"] == original
+
+    detail_rect = page.table.visualRect(page.table.model().index(0, 4))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=detail_rect.center())
+    app.processEvents()
+    QTest.mouseDClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=detail_rect.center())
+    app.processEvents()
+    detail_editor = page.table.cellWidget(0, 4)
+    assert isinstance(detail_editor, QLineEdit)
+    detail_editor.setText("더블클릭으로 수정한 세부내용")
+    detail_editor.editingFinished.emit(); app.processEvents()
+    assert db.one("SELECT detail FROM event_tasks WHERE event_id=?", (event_id,))["detail"] == "더블클릭으로 수정한 세부내용"
+    assert page.table.cellWidget(0, 4) is None
+    page.close(); db.close()
+
+
+def test_all_spreadsheet_pages_use_cell_selection_and_double_click_editing(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "all-double-click.db"); service = EventService(db)
+    master_id = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")["id"]
+    event_id = service.create_event("전체 표 편집", date.today(), date.today(), [master_id])
+    vendor_id = db.execute(
+        "INSERT INTO contacts(kind,name,role_note) VALUES ('VENDOR','더블클릭 업체','기존 업종')"
+    ).lastrowid
+    checklist = EventsPage(service, db); checklist.set_event(event_id)
+    settlement = SettlementPage(service, db); settlement.set_event(event_id)
+    master = MasterPage(db)
+    contacts = ContactsPage(db)
+    for page in (checklist, settlement, master, contacts):
+        page.resize(1500, 700); page.show()
+    app.processEvents()
+
+    tables = [
+        checklist.table, settlement.table, master.table,
+        contacts.vendor_table, contacts.company_people, contacts.freelancer_table,
+    ]
+    assert all(table.selectionBehavior() == QAbstractItemView.SelectionBehavior.SelectItems for table in tables)
+    assert not (master.table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable)
+    assert not (master.table.item(0, 2).flags() & Qt.ItemFlag.ItemIsEditable)
+
+    task_row = next(iter(settlement._task_rows.values()))
+    item_rect = settlement.table.visualRect(settlement.table.model().index(task_row, 2))
+    QTest.mouseClick(settlement.table.viewport(), Qt.MouseButton.LeftButton, pos=item_rect.center())
+    app.processEvents(); assert settlement.table.cellWidget(task_row, 2) is None
+    QTest.mouseDClick(settlement.table.viewport(), Qt.MouseButton.LeftButton, pos=item_rect.center())
+    app.processEvents(); item_editor = settlement.table.cellWidget(task_row, 2)
+    assert isinstance(item_editor, QLineEdit)
+    item_editor.setText("정산표에서 수정한 항목")
+    item_editor.editingFinished.emit(); app.processEvents()
+    assert db.one("SELECT name FROM event_tasks WHERE event_id=?", (event_id,))["name"] == "정산표에서 수정한 항목"
+
+    vendor_row = next(
+        row for row in range(contacts.vendor_table.rowCount())
+        if contacts.vendor_table.item(row, 0).data(Qt.ItemDataRole.UserRole) == vendor_id
+    )
+    industry_rect = contacts.vendor_table.visualRect(contacts.vendor_table.model().index(vendor_row, 1))
+    QTest.mouseClick(contacts.vendor_table.viewport(), Qt.MouseButton.LeftButton, pos=industry_rect.center())
+    app.processEvents()
+    QTest.mouseDClick(contacts.vendor_table.viewport(), Qt.MouseButton.LeftButton, pos=industry_rect.center())
+    app.processEvents(); industry_editor = contacts.vendor_table.cellWidget(vendor_row, 1)
+    assert isinstance(industry_editor, QLineEdit)
+    industry_editor.setText("수정된 업종")
+    industry_editor.editingFinished.emit(); app.processEvents()
+    assert db.one("SELECT role_note FROM contacts WHERE id=?", (vendor_id,))["role_note"] == "수정된 업종"
+
+    for page in (checklist, settlement, master, contacts):
+        page.close()
+    db.close()
+
+
+def test_all_spreadsheet_headers_show_column_resize_guides(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    previous_style = app.styleSheet(); app.setStyleSheet(application_stylesheet())
+    db = Database(tmp_path / "header-guides.db"); service = EventService(db)
+    master_id = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")["id"]
+    event_id = service.create_event("열 너비 안내", date.today(), date.today(), [master_id])
+    pages = [EventsPage(service, db), SettlementPage(service, db), MasterPage(db), ContactsPage(db)]
+    pages[0].set_event(event_id); pages[1].set_event(event_id)
+    tables = [
+        pages[0].table, pages[1].table, pages[2].table,
+        pages[3].vendor_table, pages[3].company_people, pages[3].freelancer_table,
+    ]
+    for table in tables:
+        header = table.horizontalHeader()
+        assert header.property("columnResizeGuides") is True
+        assert "세로선" in header.toolTip() and "열 너비" in header.toolTip()
+        assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    assert 'QHeaderView[columnResizeGuides="true"]::section:horizontal' in app.styleSheet()
+    assert "border-right: 1px solid #C9CDD3" in app.styleSheet()
+    for page in pages:
+        page.close()
+    db.close(); app.setStyleSheet(previous_style)
+
+
 def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
     app = QApplication.instance() or QApplication([])
     previous_style = app.styleSheet(); app.setStyleSheet(application_stylesheet())
@@ -658,6 +1023,9 @@ def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
     settlement = pages[2]
     target = settlement.table.visualRect(settlement.table.model().index(0, 3))
     QTest.mouseClick(settlement.table.viewport(), Qt.MouseButton.LeftButton, pos=target.center())
+    app.processEvents()
+    assert settlement.table.cellWidget(0, 3) is None
+    QTest.mouseDClick(settlement.table.viewport(), Qt.MouseButton.LeftButton, pos=target.center())
     app.processEvents()
     editor_rect = settlement.table.cellWidget(0, 3).geometry()
     cell_rect = settlement.table.visualRect(settlement.table.model().index(0, 3))
@@ -689,17 +1057,37 @@ def test_contact_spreadsheets_use_shared_center_alignment(tmp_path):
     page.close(); db.close()
 
 
-def test_settings_is_separated_at_sidebar_bottom_and_month_nav_is_centered(tmp_path):
+def test_settings_is_separated_and_calendar_header_is_compact(tmp_path):
     app = QApplication.instance() or QApplication([])
+    previous_style = app.styleSheet(); app.setStyleSheet(application_stylesheet())
     db = Database(tmp_path / "layout.db"); window = MainWindow(db, enable_update_check=False)
     window.resize(1440, 900); window.show(); app.processEvents()
     assert window.nav_buttons[4].y() > window.nav_buttons[3].y() + window.nav_buttons[3].height() + 100
     calendar = CalendarPage(window.service, db)
     calendar.resize(1200, 780); calendar.show(); app.processEvents()
-    label_center = calendar.month_label.mapToGlobal(calendar.month_label.rect().center()).x()
+    header_centers = [
+        widget.mapToGlobal(widget.rect().center()).y()
+        for widget in (
+            calendar.previous_button, calendar.month_label, calendar.following_button,
+            calendar.today_button, calendar.toggle, calendar.export_button,
+        )
+    ]
+    assert max(header_centers) - min(header_centers) <= 1
+    calendar_top = calendar.calendar.mapToGlobal(calendar.calendar.rect().topLeft()).y()
+    side_top = calendar.side.mapToGlobal(calendar.side.rect().topLeft()).y()
+    assert calendar_top == side_top
+    navigation_center = calendar.navigation.mapToGlobal(calendar.navigation.rect().center()).x()
     timeline_center = calendar.calendar.mapToGlobal(calendar.calendar.rect().center()).x()
-    assert abs(label_center - timeline_center) <= 3
-    calendar.close(); window.close(); db.close()
+    assert abs(navigation_center - timeline_center) <= 1
+    following_right = calendar.following_button.mapToGlobal(calendar.following_button.rect().topRight()).x()
+    today_left = calendar.today_button.mapToGlobal(calendar.today_button.rect().topLeft()).x()
+    assert 1 <= today_left - following_right <= 10
+    assert not hasattr(calendar, "description")
+    assert calendar.export_button.x() > calendar.toggle.x()
+    assert calendar.export_button.height() == calendar.toggle.height() == 42
+    assert not calendar.export_button.icon().isNull()
+    assert calendar.export_button.toolTip() == "달력 PDF로 내보내기"
+    calendar.close(); window.close(); db.close(); app.setStyleSheet(previous_style)
 
 
 def test_calendar_marks_today_and_today_button_restores_current_date(tmp_path):
@@ -742,12 +1130,47 @@ def test_event_dialog_places_master_items_on_right_and_shows_freelancer_role(tmp
     freelancers = [{"id": 991, "name": "홍길동", "role_note": "영상 촬영", "phone": ""}]
     dialog = EventDialog(masters, freelancers=freelancers)
     dialog.show(); app.processEvents()
-    assert dialog.freelancer_list.item(0).text() == "홍길동  ·  영상 촬영"
+    assert dialog.freelancer_list.item(0).text() == "홍길동 · 영상 촬영"
     assert isinstance(dialog.budget_tax_mode, AppComboBox)
     tree_left = dialog.tree.mapToGlobal(dialog.tree.rect().topLeft()).x()
     participants_right = dialog.freelancer_list.mapToGlobal(dialog.freelancer_list.rect().topRight()).x()
     assert tree_left > participants_right
     dialog.close(); db.close()
+
+
+def test_event_dialog_can_switch_item_tree_to_previous_event(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "previous-event-dialog.db")
+    service = EventService(db)
+    masters = db.query("SELECT * FROM master_items ORDER BY sort_order LIMIT 2")
+    source_id = service.create_event(
+        "지난 시민의 날", date(2026, 7, 1), date(2026, 7, 2), [row["id"] for row in masters]
+    )
+    events = service.list_events()
+    dialog = EventDialog(
+        masters, previous_events=events, previous_task_loader=service.list_tasks,
+    )
+    assert dialog.previous_button.isEnabled()
+    dialog._populate_previous_tree(service.list_tasks(source_id), source_id, True)
+    values = dialog.import_values()
+    assert values["source_event_id"] == source_id
+    assert values["copy_settlement_prices"] is True
+    assert values["source_task_ids"] == [row["id"] for row in service.list_tasks(source_id)]
+    assert "지난 시민의 날" in dialog.tree.headerItem().text(0)
+    dialog.close(); db.close()
+
+
+def test_previous_event_import_dialog_defaults_to_items_only(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "previous-event-choice.db")
+    service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
+    event_id = service.create_event("기준 행사", date(2026, 7, 1), None, [master["id"]])
+    chooser = PreviousEventImportDialog(service.list_events())
+    assert chooser.values() == (event_id, False)
+    chooser.with_settlement.setChecked(True)
+    assert chooser.values() == (event_id, True)
+    chooser.close(); db.close()
 
 
 def test_calendar_cards_use_soft_category_border_colors():

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class Database:
@@ -106,6 +106,7 @@ class Database:
                 kind TEXT NOT NULL CHECK(kind IN ('PERSON', 'VENDOR')),
                 name TEXT NOT NULL,
                 phone TEXT NOT NULL DEFAULT '',
+                job_title TEXT NOT NULL DEFAULT '',
                 role_note TEXT NOT NULL DEFAULT '',
                 company_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -336,6 +337,11 @@ class Database:
                 """
             )
             version = 7
+        if version == 7:
+            contact_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(contacts)")}
+            if "job_title" not in contact_columns:
+                self.conn.execute("ALTER TABLE contacts ADD COLUMN job_title TEXT NOT NULL DEFAULT ''")
+            version = 8
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"DB 마이그레이션 경로가 없습니다: {from_version} → {SCHEMA_VERSION}")
         self.conn.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))

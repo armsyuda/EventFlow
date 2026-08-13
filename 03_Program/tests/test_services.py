@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from event_checklist.services import EventService
 
 
@@ -14,6 +16,64 @@ def test_create_event_only_selected_and_snapshot_is_stable(db):
     first_name = tasks[0]["name"]
     db.execute("UPDATE master_items SET name='변경된 기본 항목' WHERE id=?", (masters[0]["id"],))
     assert service.list_tasks(event_id)[0]["name"] == first_name
+
+
+def test_create_event_can_copy_previous_items_with_optional_prices(db):
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 2")
+    source_id = service.create_event(
+        "복사 원본", date(2026, 8, 1), date(2026, 8, 2), [row["id"] for row in masters]
+    )
+    source_tasks = service.list_tasks(source_id)
+    service.update_task(
+        source_tasks[0]["id"], name="수정된 항목", detail="원본 세부내용", quantity=9, unit="식",
+        unit_price=123456, vat_type="EXEMPT", status="완료",
+        planned_start="2026-07-01", due_date="2026-07-02",
+    )
+    custom_id = service.add_custom_task(
+        source_id, major="운영", minor="현장", name="원본 직접 항목", detail="직접 추가한 내용",
+        quantity=4, unit="회", unit_price=76543, vat_type="TAXABLE",
+    )
+    service.set_task_removed([source_tasks[1]["id"]], True, "이번 행사 제외")
+    active_ids = [source_tasks[0]["id"], custom_id]
+
+    item_only_id = service.create_event(
+        "항목만 복사", date(2026, 9, 1), None, [], source_event_id=source_id,
+        source_task_ids=active_ids, copy_settlement_prices=False,
+    )
+    item_only = service.list_tasks(item_only_id)
+    assert [(row["name"], row["detail"]) for row in item_only] == [
+        ("수정된 항목", "원본 세부내용"), ("원본 직접 항목", "직접 추가한 내용")
+    ]
+    assert {row["quantity"] for row in item_only} == {1}
+    assert {row["unit_price"] for row in item_only} == {0}
+    assert {row["status"] for row in item_only} == {"미착수"}
+    assert {(row["planned_start"], row["due_date"]) for row in item_only} == {(None, None)}
+    assert {(row["assignee_id"], row["pm_assignee_id"], row["vendor_id"]) for row in item_only} == {
+        (None, None, None)
+    }
+
+    with_prices_id = service.create_event(
+        "정산도 복사", date(2026, 10, 1), None, [], source_event_id=source_id,
+        source_task_ids=active_ids, copy_settlement_prices=True,
+    )
+    with_prices = service.list_tasks(with_prices_id)
+    assert [(row["quantity"], row["unit_price"], row["vat_type"]) for row in with_prices] == [
+        (1, 123456, "EXEMPT"), (1, 76543, "TAXABLE")
+    ]
+
+
+def test_previous_event_copy_rejects_removed_or_foreign_tasks(db):
+    service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
+    source_id = service.create_event("원본", date(2026, 8, 1), None, [master["id"]])
+    other_id = service.create_event("다른 행사", date(2026, 8, 2), None, [master["id"]])
+    foreign_task = service.list_tasks(other_id)[0]
+    with pytest.raises(ValueError, match="가져올 수 없는"):
+        service.create_event(
+            "잘못된 복사", date(2026, 9, 1), None, [], source_event_id=source_id,
+            source_task_ids=[foreign_task["id"]],
+        )
 
 
 def test_new_event_tasks_start_with_blank_dates_and_can_be_filled_or_cleared(db):
@@ -96,6 +156,13 @@ def test_price_vat_snapshot_and_round_half_up(db):
     assert service.line_amounts(task["quantity"], task["unit_price"], task["vat_type"]) == (833, 83, 916)
     summary = service.settlement_summary(event_id)
     assert (summary["supply"], summary["vat"], summary["total"], summary["difference"]) == (833, 83, 916, 84)
+    assert summary["comparison"] == 916
+    db.execute("UPDATE events SET budget_tax_mode='EXCLUDED' WHERE id=?", (event_id,))
+    excluded = service.settlement_summary(event_id)
+    assert (excluded["comparison"], excluded["difference"]) == (833, 167)
+    db.execute("UPDATE events SET budget_tax_mode='UNSET' WHERE id=?", (event_id,))
+    unset = service.settlement_summary(event_id)
+    assert unset["comparison"] is unset["difference"] is None
 
 
 def test_import_remove_restore_and_custom_task(db):
@@ -175,6 +242,53 @@ def test_event_participants_and_company_assignees(db):
                                     vendor_ids=[vendor["id"]], freelancer_ids=[freelancer["id"]])
     available = {row["id"] for row in service.available_assignees(event_id, vendor["id"])}
     assert {person_id, freelancer["id"]} <= available
+
+
+def test_bulk_assignment_updates_selected_tasks_atomically_and_validates_companies(db, tmp_path):
+    service = EventService(db)
+    pm_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','일괄 PM 업체')").lastrowid
+    work_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','일괄 실행 업체')").lastrowid
+    other_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','다른 실행 업체')").lastrowid
+    pm_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','일괄 PM 담당',?)", (pm_vendor,)
+    ).lastrowid
+    work_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','일괄 업체담당',?)", (work_vendor,)
+    ).lastrowid
+    other_person = db.execute(
+        "INSERT INTO contacts(kind,name,company_id) VALUES ('PERSON','다른 업체담당',?)", (other_vendor,)
+    ).lastrowid
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")
+    event_id = service.create_event(
+        "일괄 지정 행사", date(2026, 10, 1), None,
+        [row["id"] for row in masters], pm_vendor_id=pm_vendor,
+    )
+    task_ids = [row["id"] for row in service.list_tasks(event_id)]
+    db.enable_history(tmp_path / "bulk-history")
+
+    changed = service.bulk_assign_tasks(
+        event_id, task_ids[:2], pm_assignee_id=pm_person,
+        vendor_id=work_vendor, assignee_id=work_person,
+    )
+    assert changed == 2
+    assigned = db.query(
+        "SELECT id,pm_assignee_id,vendor_id,assignee_id FROM event_tasks WHERE id IN (?,?) ORDER BY id",
+        task_ids[:2],
+    )
+    assert all(
+        (row["pm_assignee_id"], row["vendor_id"], row["assignee_id"])
+        == (pm_person, work_vendor, work_person)
+        for row in assigned
+    )
+    assert db.can_undo
+    assert db.undo()
+    restored = db.query("SELECT pm_assignee_id,vendor_id,assignee_id FROM event_tasks WHERE id IN (?,?)", task_ids[:2])
+    assert all(tuple(row) == (None, None, None) for row in restored)
+
+    with pytest.raises(ValueError, match="선택한 업체 소속"):
+        service.bulk_assign_tasks(
+            event_id, task_ids[:2], vendor_id=work_vendor, assignee_id=other_person,
+        )
 
 
 def test_pm_company_is_saved_and_misc_minor_is_last_in_each_settlement_major(db):

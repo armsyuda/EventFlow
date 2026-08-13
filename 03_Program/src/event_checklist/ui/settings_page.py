@@ -12,8 +12,9 @@ from ..backup import create_backup, restore_backup
 from .. import __version__
 from ..config import install_dir
 from ..install_service import current_executable, is_fixed_installation, is_packaged_app
-from ..export import export_csv, export_excel
+from ..export import default_excel_filename, export_excel, next_available_excel_path
 from .contacts_page import ContactsPage
+from .excel_export_dialog import ExcelExportDialog
 from .master_page import MasterPage
 
 
@@ -52,9 +53,11 @@ class SettingsPage(QWidget):
         layout.addWidget(self._section("백업", "변경사항은 즉시 저장되며, 10분마다 전체 자동 백업을 만들고 최근 10개를 보관합니다. 수동 백업은 자동으로 삭제되지 않습니다.", [
             ("지금 백업", self.backup_now, True), ("백업에서 복원", self.restore_now, False),
         ]))
-        layout.addWidget(self._section("내보내기", "체크리스트와 행사별 정산 요약을 파일로 저장합니다.", [
-            ("Excel 내보내기", self.export_xlsx, True), ("CSV 내보내기", self.export_csv_file, False),
-        ]))
+        layout.addWidget(self._section(
+            "내보내기",
+            "체크리스트 또는 정산내역을 PDF와 같은 디자인의 Excel 파일로 저장합니다.",
+            [("Excel 내보내기", self.export_xlsx, True)],
+        ))
         layout.addStretch()
         return page
 
@@ -128,13 +131,30 @@ class SettingsPage(QWidget):
             self.restored.emit()
 
     def export_xlsx(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Excel 내보내기", "event_flow.xlsx", "Excel (*.xlsx)")
-        if path:
-            result = export_excel(self.db, Path(path))
-            QMessageBox.information(self, "내보내기 완료", f"Excel 파일을 저장했습니다.\n{result}")
-
-    def export_csv_file(self):
-        path, _ = QFileDialog.getSaveFileName(self, "CSV 내보내기", "event_flow.csv", "CSV (*.csv)")
-        if path:
-            result = export_csv(self.db, Path(path))
-            QMessageBox.information(self, "내보내기 완료", f"CSV 파일을 저장했습니다.\n{result}")
+        dialog = ExcelExportDialog(self.db, self)
+        if not dialog.exec():
+            return
+        values = dialog.values()
+        event = self.db.one("SELECT * FROM events WHERE id=?", (values["event_id"],))
+        filename = default_excel_filename(
+            event, values["kind"], values["options"], major=values["major"], minor=values["minor"],
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Excel 내보내기", filename, "Excel (*.xlsx)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if not path:
+            return
+        destination = Path(path)
+        if destination.suffix.lower() != ".xlsx":
+            destination = destination.with_suffix(".xlsx")
+        destination = next_available_excel_path(destination)
+        try:
+            result = export_excel(
+                self.db, destination, int(values["event_id"]), values["kind"], values["options"],
+                values["major"], values["minor"],
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Excel 내보내기 실패", f"Excel 파일을 만들지 못했습니다.\n\n{exc}")
+            return
+        QMessageBox.information(self, "내보내기 완료", f"Excel 파일을 저장했습니다.\n{result}")

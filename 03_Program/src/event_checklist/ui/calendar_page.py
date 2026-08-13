@@ -3,11 +3,13 @@ from __future__ import annotations
 import calendar
 from datetime import date, timedelta
 
-from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import QCalendarWidget, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget
 
+from ..pdf_export import export_calendar_pdf
 from ..theme import status_color
 from .month_timeline import MonthTimeline
+from .pdf_export_dialog import configure_pdf_icon_button, export_calendar_pdf_from_page
 
 
 CATEGORY_CARD_BORDERS = {
@@ -96,29 +98,38 @@ class CalendarPage(QWidget):
         self.db = db or service.db
         self.event_id: int | None = None
         root = QVBoxLayout(self); root.setContentsMargins(32, 28, 32, 32); root.setSpacing(12)
-        top = QHBoxLayout(); box = QVBoxLayout()
-        title = QLabel("달력"); title.setObjectName("PageTitle")
-        self.description = QLabel("업무 기간을 연속 막대로 확인합니다."); self.description.setObjectName("PageDescription")
-        box.addWidget(title); box.addWidget(self.description); top.addLayout(box); top.addStretch()
+        top = QHBoxLayout(); top.setSpacing(10)
+        self.title = QLabel("달력"); self.title.setObjectName("PageTitle")
+        top.addWidget(self.title, 0, Qt.AlignmentFlag.AlignBottom)
+        top.addStretch()
         self.toggle = QPushButton("일정 목록 숨기기"); self.toggle.clicked.connect(self._toggle_side)
         top.addWidget(self.toggle)
+        self.export_button = QPushButton()
+        configure_pdf_icon_button(self.export_button)
+        self.export_button.setToolTip("달력 PDF로 내보내기")
+        self.export_button.setAccessibleName("달력 PDF로 내보내기")
+        self.export_button.clicked.connect(self.export_pdf)
+        top.addWidget(self.export_button)
         root.addLayout(top)
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        calendar_panel = QWidget()
-        calendar_layout = QVBoxLayout(calendar_panel); calendar_layout.setContentsMargins(0, 0, 0, 0); calendar_layout.setSpacing(8)
-        navigation = QHBoxLayout(); navigation.setContentsMargins(0, 0, 0, 0); navigation.setSpacing(8)
+
+        self.navigation = QWidget(self)
+        navigation = QHBoxLayout(self.navigation)
+        navigation.setContentsMargins(0, 0, 0, 0); navigation.setSpacing(8)
         self.previous_button = QPushButton("‹"); self.previous_button.setFixedWidth(42); self.previous_button.clicked.connect(lambda: self._shift(-1))
         self.month_label = QLabel(""); self.month_label.setObjectName("SectionTitle"); self.month_label.setMinimumWidth(110); self.month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.following_button = QPushButton("›"); self.following_button.setFixedWidth(42); self.following_button.clicked.connect(lambda: self._shift(1))
         self.today_button = QPushButton("오늘로 가기")
         today_width = max(120, self.today_button.fontMetrics().horizontalAdvance(self.today_button.text()) + 44)
         self.today_button.setFixedWidth(today_width); self.today_button.clicked.connect(self._go_today)
-        balance = QWidget(); balance.setFixedWidth(today_width)
-        navigation.addStretch(); navigation.addWidget(balance); navigation.addWidget(self.previous_button); navigation.addWidget(self.month_label); navigation.addWidget(self.following_button); navigation.addWidget(self.today_button); navigation.addStretch()
-        calendar_layout.addLayout(navigation)
+        navigation.addWidget(self.previous_button)
+        navigation.addWidget(self.month_label)
+        navigation.addWidget(self.following_button)
+        navigation.addWidget(self.today_button)
+        self.navigation.adjustSize()
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.calendar = MonthTimeline(); self.calendar.date_selected.connect(self.refresh_selected)
-        calendar_layout.addWidget(self.calendar, 1)
-        self.splitter.addWidget(calendar_panel)
+        self.calendar.installEventFilter(self)
+        self.splitter.addWidget(self.calendar)
         self.side = QFrame(); self.side.setObjectName("CalendarSide")
         side_layout = QVBoxLayout(self.side); side_layout.setContentsMargins(16, 16, 16, 16)
         head = QHBoxLayout(); self.selected_title = QLabel(""); self.selected_title.setObjectName("SectionTitle")
@@ -133,15 +144,19 @@ class CalendarPage(QWidget):
         visible = self.db.get_setting("calendar_list_visible", "1") != "0"
         self.side.setVisible(visible); self.toggle.setText("일정 목록 숨기기" if visible else "일정 목록 보기")
         self._update_month_label()
+        QTimer.singleShot(0, self._position_navigation)
 
     def set_event(self, event_id):
         self.event_id = event_id
-        event = self.service.get_event(event_id) if event_id else None
-        self.description.setText(f"{event['name']}의 업무 기간을 확인합니다." if event else "행사를 선택하세요.")
         self.refresh()
 
     def refresh_events(self, selected_event_id=None):
         self.set_event(selected_event_id if selected_event_id is not None else self.event_id)
+
+    def export_pdf(self):
+        export_calendar_pdf_from_page(
+            self, self.db, self.event_id, self.calendar.year, self.calendar.month, export_calendar_pdf,
+        )
 
     def _shift(self, offset):
         self.calendar.shift_month(offset); self._update_month_label(); self.refresh_periods()
@@ -161,6 +176,32 @@ class CalendarPage(QWidget):
         visible = not self.side.isVisible(); self.side.setVisible(visible)
         self.toggle.setText("일정 목록 숨기기" if visible else "일정 목록 보기")
         self.db.set_setting("calendar_list_visible", "1" if visible else "0")
+        QTimer.singleShot(0, self._position_navigation)
+
+    def eventFilter(self, watched, event):
+        if watched is self.calendar and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._position_navigation)
+        return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._position_navigation)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._position_navigation)
+
+    def _position_navigation(self):
+        if not self.calendar.isVisible():
+            return
+        self.navigation.adjustSize()
+        calendar_left = self.calendar.mapTo(self, QPoint(0, 0)).x()
+        calendar_center = calendar_left + self.calendar.width() // 2
+        toggle_top = self.toggle.mapTo(self, QPoint(0, 0)).y()
+        x = calendar_center - self.navigation.width() // 2
+        y = toggle_top + (self.toggle.height() - self.navigation.height()) // 2
+        self.navigation.move(x, y)
+        self.navigation.raise_()
 
     def refresh(self): self.refresh_periods(); self.refresh_selected(self.calendar.selected)
 

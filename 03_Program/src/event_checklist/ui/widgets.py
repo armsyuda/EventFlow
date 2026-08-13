@@ -22,6 +22,8 @@ GROUP_MINOR_ROLE = int(Qt.ItemDataRole.UserRole) + 102
 class AppComboBox(QComboBox):
     """Shared combo box with a clipped, consistently styled popup."""
 
+    popup_closed = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._popup_open = False
@@ -39,6 +41,7 @@ class AppComboBox(QComboBox):
     def hidePopup(self) -> None:
         super().hidePopup()
         self._popup_open = False
+        self.popup_closed.emit()
 
     def popup_is_open(self) -> bool:
         return self._popup_open
@@ -213,6 +216,23 @@ class FastEditableTable(QTableWidget):
         self._group_spans: list[tuple[int, int]] = []
         self._money_columns: set[int] = set()
         self._fixed_column_widths: dict[int, int] = {}
+        self.currentCellChanged.connect(self._close_editor_after_cell_change)
+
+    def _close_editor_after_cell_change(self, row: int, column: int, *_previous) -> None:
+        if self._active_cell is not None and self._active_cell != (row, column):
+            editor = self._active_editor
+            if isinstance(editor, QComboBox):
+                self.close_cell_editor()
+            elif editor is not None:
+                # Text and number edits commit through editingFinished.  Give
+                # that signal a chance to save before the fallback removal.
+                editor.clearFocus()
+                QTimer.singleShot(
+                    0,
+                    lambda: self.close_cell_editor() if self._active_editor is editor else None,
+                )
+        elif self._date_popup is not None:
+            self.close_cell_editor()
 
     def set_fixed_columns(self, columns: dict[int, int]) -> None:
         self._fixed_column_widths = {int(column): int(width) for column, width in columns.items()}
@@ -341,7 +361,20 @@ class FastEditableTable(QTableWidget):
             # activated event.  Let Qt finish closing the popup first.
             QTimer.singleShot(0, self.close_cell_editor)
 
+        def close_cancelled_popup():
+            # A popup dismissed by clicking another cell must not leave its
+            # editor embedded in the old cell.  If activated() follows
+            # hidePopup(), the zero-delay check sees finished=True and leaves
+            # the normal commit path in control.
+            QTimer.singleShot(
+                0,
+                lambda: None
+                if finished or self._active_editor is not editor
+                else self.close_cell_editor(),
+            )
+
         editor.activated.connect(apply_choice)
+        editor.popup_closed.connect(close_cancelled_popup)
         if editable:
             # Opening an editable combo popup temporarily moves focus away
             # from its line edit on Windows.  That emits editingFinished even
@@ -773,6 +806,8 @@ class PeriodCalendar(QCalendarWidget):
 def configure_data_table(table: QTableWidget, widths: list[int], *, alternating: bool = True) -> None:
     """모든 열을 직접 늘이거나 이동할 수 있게 하고 초기 너비만 지정한다."""
     header = table.horizontalHeader()
+    header.setProperty("columnResizeGuides", True)
+    header.setToolTip("열 사이의 세로선을 좌우로 드래그하면 열 너비를 조절할 수 있습니다.")
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
     header.setSectionsMovable(True)
     header.setMinimumSectionSize(44)
@@ -802,6 +837,7 @@ def configure_editable_table(
     """Shared presentation contract for spreadsheet-like editable tables."""
     configure_data_table(table, widths)
     table.setProperty("embeddedEditors", True)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     if grouped:
         table.setItemDelegate(GroupSeparatorDelegate(anchor_column, table))
 
