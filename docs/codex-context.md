@@ -450,7 +450,9 @@ Windows 10/11에서 한 사람이 행사별 준비 업무를 관리하는 Python
 # 2026-08-13 이벤트 플로우 0.3.27 공개 업데이트
 
 - 0.3.26 이후의 체크리스트·정산·달력 PDF, 선택형 Excel 내보내기, 분류별 출력, 담당 일괄 지정, 연락처 직책, 정산 예산 비교 표시를 0.3.27 공개 업데이트 범위로 묶었다.
-- 앱 버전과 패키지 버전을 0.3.27로 맞췄다. GitHub `v0.3.27` 태그의 Windows workflow가 `EventFlow-Windows.zip`과 SHA-256 파일을 공개 Release에 첨부하면 기존 사용자는 앱 상단 업데이트 기능으로 내려받아 설치할 수 있다.
+- 앱 버전과 패키지 버전을 0.3.27로 맞췄다. PR #12를 `main`에 병합하고 `v0.3.27` 태그를 공개했다. Windows workflow run `31662164199`가 테스트·빌드·Release 게시까지 성공했다.
+- 공개 Release는 `https://github.com/armsyuda/EventFlow/releases/tag/v0.3.27`이며 `EventFlow-Windows.zip`과 SHA-256 파일이 첨부됐다. ZIP의 검증된 SHA-256은 `4d9db02d1230e4a66af1e7661fb9f223bd673669a7bc941575e20714260fe1b5`다.
+- 공개 ZIP을 다시 내려받아 해시를 대조하고 압축 해제 실행본의 smoke test 종료 코드 0을 확인했다. 0.3.26 클라이언트 조건의 실제 업데이트 조회에서도 0.3.27과 자동 업데이트 ZIP을 정상 감지했다.
 - 로컬 데이터베이스와 백업, 렌더 검수용 `tmp/`·`output/`, 빌드 산출물은 Git에 포함하지 않는다. 사용자 데이터는 기존처럼 `%LOCALAPPDATA%\EventCheckList`에 보존된다.
 
 # 2026-08-13 전체 표 더블클릭 편집
