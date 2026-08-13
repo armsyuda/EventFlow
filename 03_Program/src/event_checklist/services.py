@@ -22,7 +22,7 @@ class EventService:
         name: str,
         start_date: date,
         end_date: date | None,
-        selected_master_ids: Iterable[int],
+        selected_master_ids: Iterable[int] = (),
         location: str = "",
         organizer: str = "",
         budget: float | None = None,
@@ -30,6 +30,9 @@ class EventService:
         pm_vendor_id: int | None = None,
         vendor_ids: Iterable[int] = (),
         freelancer_ids: Iterable[int] = (),
+        source_event_id: int | None = None,
+        source_task_ids: Iterable[int] = (),
+        copy_settlement_prices: bool = False,
     ) -> int:
         name = name.strip()
         if not name:
@@ -37,14 +40,32 @@ class EventService:
         if end_date and end_date < start_date:
             raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
         ids = list(dict.fromkeys(int(value) for value in selected_master_ids))
-        if not ids:
-            raise ValueError("하나 이상의 기본 항목을 선택하세요.")
-        placeholders = ",".join("?" for _ in ids)
-        masters = self.db.query(
-            f"SELECT * FROM master_items WHERE id IN ({placeholders}) ORDER BY sort_order", ids
-        )
-        if len(masters) != len(ids):
-            raise ValueError("선택한 기본 항목 중 사용할 수 없는 항목이 있습니다.")
+        imported_ids = list(dict.fromkeys(int(value) for value in source_task_ids))
+        if source_event_id is not None:
+            if ids:
+                raise ValueError("기본 항목과 이전 행사 항목을 동시에 가져올 수 없습니다.")
+            if not imported_ids:
+                raise ValueError("이전 행사에서 가져올 항목을 선택하세요.")
+            placeholders = ",".join("?" for _ in imported_ids)
+            imported_tasks = self.db.query(
+                f"""SELECT * FROM event_tasks
+                    WHERE event_id=? AND is_removed=0 AND id IN ({placeholders})
+                    ORDER BY sort_order,id""",
+                (int(source_event_id), *imported_ids),
+            )
+            if len(imported_tasks) != len(imported_ids):
+                raise ValueError("이전 행사의 선택 항목 중 가져올 수 없는 항목이 있습니다.")
+            masters = []
+        else:
+            if not ids:
+                raise ValueError("하나 이상의 기본 항목을 선택하세요.")
+            placeholders = ",".join("?" for _ in ids)
+            masters = self.db.query(
+                f"SELECT * FROM master_items WHERE id IN ({placeholders}) ORDER BY sort_order", ids
+            )
+            if len(masters) != len(ids):
+                raise ValueError("선택한 기본 항목 중 사용할 수 없는 항목이 있습니다.")
+            imported_tasks = []
 
         selected_vendors = {int(value) for value in vendor_ids}
         if pm_vendor_id:
@@ -90,6 +111,21 @@ class EventService:
                         item["default_assignee_id"], item["default_vendor_id"],
                         None, None, item["sort_order"],
                         item["base_unit_price"], item["default_vat_type"],
+                    ),
+                )
+            for item in imported_tasks:
+                conn.execute(
+                    """
+                    INSERT INTO event_tasks(
+                        event_id,master_item_id,major,minor,name,detail,required,status,priority,
+                        quantity,unit,planned_start,due_date,sort_order,unit_price,vat_type
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        event_id, item["master_item_id"], item["major"], item["minor"], item["name"],
+                        item["detail"], item["required"], "미착수", item["priority"], 1, item["unit"],
+                        None, None, item["sort_order"],
+                        item["unit_price"] if copy_settlement_prices else 0, item["vat_type"],
                     ),
                 )
         return event_id
@@ -166,7 +202,7 @@ class EventService:
 
     def update_task(self, task_id: int, **fields) -> None:
         allowed = {
-            "status", "quantity", "unit", "assignee_id", "pm_assignee_id", "vendor_id",
+            "name", "status", "quantity", "unit", "assignee_id", "pm_assignee_id", "vendor_id",
             "planned_start", "due_date", "cost", "note", "detail", "required",
             "unit_price", "vat_type", "is_removed", "removed_reason",
         }
@@ -193,6 +229,58 @@ class EventService:
         self.db.execute(
             f"UPDATE event_tasks SET {assignments},updated_at=CURRENT_TIMESTAMP WHERE id=?", values
         )
+
+    def bulk_assign_tasks(self, event_id: int, task_ids: Iterable[int], **assignments) -> int:
+        """Assign PM, vendor, and vendor contact to several active tasks atomically."""
+        allowed = {"pm_assignee_id", "vendor_id", "assignee_id"}
+        unknown = set(assignments) - allowed
+        if unknown:
+            raise ValueError(f"일괄 지정할 수 없는 필드: {', '.join(sorted(unknown))}")
+        ids = list(dict.fromkeys(int(value) for value in task_ids))
+        if not ids or not assignments:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        tasks = self.db.query(
+            f"SELECT id,vendor_id FROM event_tasks WHERE event_id=? AND is_removed=0 AND id IN ({placeholders})",
+            (event_id, *ids),
+        )
+        if len(tasks) != len(ids):
+            raise ValueError("선택한 항목 중 현재 행사에서 변경할 수 없는 항목이 있습니다.")
+
+        if "pm_assignee_id" in assignments and assignments["pm_assignee_id"] is not None:
+            event = self.get_event(event_id)
+            person = self.db.one(
+                "SELECT kind,company_id FROM contacts WHERE id=?", (assignments["pm_assignee_id"],)
+            )
+            if not person or person["kind"] != "PERSON" or person["company_id"] != event["pm_vendor_id"]:
+                raise ValueError("담당자(PM)는 이 행사의 PM 업체 소속 담당자만 지정할 수 있습니다.")
+
+        if "vendor_id" in assignments and assignments["vendor_id"] is not None:
+            vendor = self.db.one("SELECT kind FROM contacts WHERE id=?", (assignments["vendor_id"],))
+            if not vendor or vendor["kind"] != "VENDOR":
+                raise ValueError("선택한 업체를 찾을 수 없습니다.")
+        if "vendor_id" in assignments:
+            # 업체가 바뀌면 기존 업체담당자를 그대로 둘 수 없다. 지정값이 없으면
+            # 미지정으로 정리해 업체와 담당자의 소속이 어긋나지 않게 한다.
+            assignments.setdefault("assignee_id", None)
+
+        if "assignee_id" in assignments and assignments["assignee_id"] is not None:
+            person = self.db.one(
+                "SELECT kind,company_id FROM contacts WHERE id=?", (assignments["assignee_id"],)
+            )
+            expected_vendor = assignments.get("vendor_id")
+            if not person or person["kind"] != "PERSON" or person["company_id"] != expected_vendor:
+                raise ValueError("업체담당자는 선택한 업체 소속 담당자만 지정할 수 있습니다.")
+
+        columns = ",".join(f"{field}=?" for field in assignments)
+        values = list(assignments.values())
+        with self.db.transaction() as conn:
+            conn.execute(
+                f"UPDATE event_tasks SET {columns},updated_at=CURRENT_TIMESTAMP "
+                f"WHERE event_id=? AND is_removed=0 AND id IN ({placeholders})",
+                (*values, event_id, *ids),
+            )
+        return len(ids)
 
     def set_completed(self, task_id: int, completed: bool) -> None:
         self.update_task(task_id, status="완료" if completed else "미착수")
@@ -245,9 +333,10 @@ class EventService:
             t.due_date, t.sort_order"""
         return self.db.query(sql, params)
 
-    def calendar_range(self, first: date, last: date, event_id: int | None = None):
+    def calendar_range(self, first: date, last: date, event_id: int | None = None,
+                       major: str = "", minor: str = ""):
         sql = """
-            SELECT id,event_id,name,major,sort_order,planned_start,due_date,status
+            SELECT id,event_id,name,major,minor,sort_order,planned_start,due_date,status
             FROM event_tasks WHERE is_removed=0 AND status NOT IN ('완료','해당없음')
               AND planned_start IS NOT NULL AND due_date IS NOT NULL
               AND due_date>=? AND planned_start<=?
@@ -256,6 +345,12 @@ class EventService:
         if event_id:
             sql += " AND event_id=?"
             params.append(event_id)
+        if major:
+            sql += " AND major=?"
+            params.append(major)
+        if minor:
+            sql += " AND minor=?"
+            params.append(minor)
         sql += " ORDER BY due_date, sort_order"
         return self.db.query(sql, params)
 
@@ -410,7 +505,8 @@ class EventService:
         total = supply + vat
         budget = int(event["budget"] or 0) if event else 0
         mode = event["budget_tax_mode"] if event else "UNSET"
-        comparison = total if mode == "INCLUDED" else supply
+        comparison = total if mode == "INCLUDED" else (supply if mode == "EXCLUDED" else None)
         return {"event": event, "items": items, "categories": categories, "supply": supply, "vat": vat,
                 "total": total, "budget": budget, "budget_tax_mode": mode,
-                "difference": budget - comparison if budget else None, "warnings": warnings}
+                "difference": budget - comparison if budget and comparison is not None else None,
+                "comparison": comparison, "warnings": warnings}

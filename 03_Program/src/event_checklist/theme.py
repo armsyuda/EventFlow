@@ -90,6 +90,7 @@ def application_stylesheet() -> str:
     QLabel#AppTitle {{ font-size: 18px; font-weight: 700; color: {c['brand']}; padding: 8px; }}
     QLabel#PageTitle {{ font-size: 26px; font-weight: 700; }}
     QLabel#PageDescription, QLabel#Muted {{ color: {c['fg_muted']}; }}
+    QLabel#ChecklistCount {{ color: #A06F59; padding-left: 4px; }}
     QLabel#SectionTitle {{ font-size: 18px; font-weight: 700; }}
     QLabel#InfoGuide {{
         color: {c['informative']}; background: {c['informative_weak']};
@@ -106,6 +107,18 @@ def application_stylesheet() -> str:
     }}
     QPushButton[primary="true"] {{ background: {c['brand']}; color: white; border: none; }}
     QPushButton[primary="true"]:hover {{ background: {c['brand_pressed']}; }}
+    QPushButton[attention="true"] {{ color: {c['brand']}; border: 2px solid {c['brand']}; font-weight: 700; background: {c['bg_layer']}; }}
+    QPushButton[attention="true"]:hover {{ color: white; background: {c['brand']}; }}
+    QPushButton[quiet="true"] {{ color: {c['fg_muted']}; background: {c['bg_weak']}; border-color: {c['stroke']}; }}
+    QPushButton[quiet="true"]:checked {{ color: {c['brand']}; background: {c['brand_weak']}; border-color: #F7C5AE; }}
+    QPushButton[checklistAction="true"] {{ min-height: 42px; max-height: 42px; }}
+    QPushButton[checklistAction="true"][primary="true"] {{ min-height: 44px; max-height: 44px; }}
+    QPushButton[checklistAction="true"][attention="true"] {{ min-height: 40px; max-height: 40px; }}
+    QPushButton#PdfExportButton {{ min-width: 0px; min-height: 0px; padding: 8px; background: {c['bg_layer']}; }}
+    QPushButton#PdfExportButton:hover {{ background: {c['brand_weak']}; border-color: #F7C5AE; }}
+    QRadioButton[pdfOption="true"] {{ background: {c['bg_layer']}; border: 1px solid {c['stroke']}; border-radius: 8px; padding: 0 14px; font-weight: 700; }}
+    QRadioButton[pdfOption="true"]:checked {{ color: {c['brand']}; background: {c['brand_weak']}; border: 2px solid {c['brand']}; }}
+    QRadioButton[pdfOption="true"]::indicator {{ width: 0px; height: 0px; }}
     QPushButton[danger="true"] {{ color: {c['critical']}; border-color: #F2BBB7; }}
     QPushButton[nav="true"] {{
         min-height: 44px; text-align: left; border: none; border-radius: 8px;
@@ -177,6 +190,12 @@ def application_stylesheet() -> str:
     QHeaderView::section {{
         background: {c['bg_weak']}; color: {c['fg_muted']}; border: none;
         border-bottom: 1px solid {c['stroke']}; padding: 10px; font-weight: 700;
+    }}
+    QHeaderView[columnResizeGuides="true"]::section:horizontal {{
+        border-right: 1px solid #C9CDD3;
+    }}
+    QHeaderView[columnResizeGuides="true"]::section:horizontal:hover {{
+        border-right: 2px solid {c['brand']};
     }}
     QTableCornerButton::section {{ background: {c['bg_weak']}; border: none; border-bottom: 1px solid {c['stroke']}; }}
     QTableWidget::item {{ padding: 7px; }}

@@ -63,14 +63,15 @@ class MasterPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         configure_editable_table(
             self.table, [52, 92, 116, 180, 260, 76, 88, 120, 90, 150, 150], grouped=True
         )
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.table.set_fixed_columns({0: 52})
         self.table.cellChanged.connect(self._cell_changed)
-        self.table.cellClicked.connect(self._open_cell_editor)
-        self.table.doubleClicked.connect(self.edit_selected)
+        self.table.cellDoubleClicked.connect(self._open_cell_editor)
         root.addWidget(self.table, 1)
         note = QLabel("기본 항목에는 일정 규칙을 저장하지 않습니다. 행사별 작업 시작일과 마감일은 체크리스트에서 직접 입력합니다.")
         note.setObjectName("InfoGuide"); note.setWordWrap(True)
@@ -124,6 +125,8 @@ class MasterPage(QWidget):
             for c, value in enumerate(values, 1):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.ItemDataRole.UserRole, item["id"])
+                if c in {1, 2}:
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, c, cell)
             for group_column in (1, 2):
                 group = self.table.item(r, group_column)
