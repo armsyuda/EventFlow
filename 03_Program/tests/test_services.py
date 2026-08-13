@@ -18,6 +18,41 @@ def test_create_event_only_selected_and_snapshot_is_stable(db):
     assert service.list_tasks(event_id)[0]["name"] == first_name
 
 
+def test_tasks_and_calendar_filter_vendor_and_pm_independently(db):
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")
+    event_id = service.create_event(
+        "업체 PM 필터", date(2026, 10, 1), date(2026, 10, 31), [row["id"] for row in masters]
+    )
+    vendor_a = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','가 업체')").lastrowid
+    vendor_b = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','나 업체')").lastrowid
+    pm_a = db.execute("INSERT INTO contacts(kind,name) VALUES ('PERSON','김 PM')").lastrowid
+    pm_b = db.execute("INSERT INTO contacts(kind,name) VALUES ('PERSON','이 PM')").lastrowid
+    tasks = service.list_tasks(event_id)
+    assignments = [
+        (vendor_a, pm_a),
+        (vendor_b, pm_a),
+        (vendor_b, pm_b),
+    ]
+    for task, (vendor_id, pm_id) in zip(tasks, assignments):
+        db.execute(
+            """UPDATE event_tasks SET vendor_id=?,pm_assignee_id=?,planned_start='2026-10-01',
+               due_date='2026-10-03' WHERE id=?""",
+            (vendor_id, pm_id, task["id"]),
+        )
+
+    assert {row["id"] for row in service.list_tasks(event_id, vendor_id=vendor_a)} == {tasks[0]["id"]}
+    assert {row["id"] for row in service.list_tasks(event_id, pm_assignee_id=pm_a)} == {
+        tasks[0]["id"], tasks[1]["id"],
+    }
+    assert {row["id"] for row in service.list_tasks(
+        event_id, vendor_id=vendor_b, pm_assignee_id=pm_b,
+    )} == {tasks[2]["id"]}
+    assert {row["id"] for row in service.calendar_range(
+        date(2026, 10, 1), date(2026, 10, 31), event_id, vendor_id=vendor_b,
+    )} == {tasks[1]["id"], tasks[2]["id"]}
+
+
 def test_create_event_can_copy_previous_items_with_optional_prices(db):
     service = EventService(db)
     masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 2")

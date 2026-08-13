@@ -63,7 +63,7 @@ class EventsPage(QWidget):
         root.addLayout(top)
 
         actions = QHBoxLayout()
-        actions.setSpacing(10)
+        actions.setSpacing(6)
         self.search = QLineEdit()
         self.search.setPlaceholderText("항목·세부내용·메모 검색")
         self.search.setClearButtonEnabled(True)
@@ -78,30 +78,37 @@ class EventsPage(QWidget):
         for major in load_master_choice_catalog(self.db).majors:
             self.major_filter.addItem(major, major)
         self.major_filter.currentIndexChanged.connect(self.refresh_tasks)
+        self.vendor_filter = AppComboBox()
+        self.vendor_filter.addItem("모든 업체", None)
+        self.vendor_filter.currentIndexChanged.connect(self.refresh_tasks)
+        self.pm_filter = AppComboBox()
+        self.pm_filter.addItem("모든 담당자(PM)", None)
+        self.pm_filter.currentIndexChanged.connect(self.refresh_tasks)
         self.bulk_assign_button = QPushButton("선택 행 담당 지정")
         self.bulk_assign_button.setProperty("checklistAction", True)
         self.bulk_assign_button.clicked.connect(self.assign_selected)
         actions.addWidget(self.search, 1)
         actions.addWidget(self.status_filter)
         actions.addWidget(self.major_filter)
+        actions.addWidget(self.vendor_filter)
+        actions.addWidget(self.pm_filter)
         actions.addWidget(self.bulk_assign_button)
         self.add_button = QPushButton("+ 직접 항목 추가")
         self.add_button.setProperty("checklistAction", True)
         self.add_button.setProperty("primary", True)
-        self.add_button.setMinimumSize(170, 48)
+        self.add_button.setMinimumWidth(144)
         self.add_button.clicked.connect(self.add_custom)
         actions.addWidget(self.add_button)
         self.remove_button = QPushButton("선택 항목 제외")
         self.remove_button.setProperty("checklistAction", True)
         self.remove_button.setProperty("attention", True)
-        self.remove_button.setMinimumSize(150, 48)
+        self.remove_button.setMinimumWidth(130)
         self.remove_button.clicked.connect(self.remove_selected)
         actions.addWidget(self.remove_button)
         self.removed_toggle = QPushButton("제외 항목 보기")
         self.removed_toggle.setProperty("checklistAction", True)
         self.removed_toggle.setCheckable(True)
         self.removed_toggle.setProperty("quiet", True)
-        self.removed_toggle.setMinimumHeight(48)
         self.removed_toggle.toggled.connect(self._removed_view_toggled)
         actions.addWidget(self.removed_toggle)
         self.pdf_button = QPushButton()
@@ -109,6 +116,10 @@ class EventsPage(QWidget):
         configure_pdf_icon_button(self.pdf_button, size=44)
         self.pdf_button.clicked.connect(self.export_pdf)
         actions.addWidget(self.pdf_button)
+        for widget in (
+            self.search, self.status_filter, self.major_filter, self.vendor_filter, self.pm_filter,
+        ):
+            widget.setProperty("checklistCompact", True)
         root.addLayout(actions)
 
         self.table = FastEditableTable(0, 12)
@@ -253,6 +264,7 @@ class EventsPage(QWidget):
     def refresh_tasks(self):
         self.loading = True
         self._sync_major_filter()
+        self._sync_assignment_filters()
         self.table.setUpdatesEnabled(False)
         self.table.blockSignals(True)
         self.table.reset_spans()
@@ -265,7 +277,8 @@ class EventsPage(QWidget):
             return
         tasks = [dict(row) for row in self.service.list_tasks(
             self.event_id, self.search.text().strip(), self.status_filter.currentData() or "",
-            self.major_filter.currentData() or "", include_removed=self.removed_toggle.isChecked())]
+            self.major_filter.currentData() or "", include_removed=self.removed_toggle.isChecked(),
+            vendor_id=self.vendor_filter.currentData(), pm_assignee_id=self.pm_filter.currentData())]
         if self.removed_toggle.isChecked():
             tasks = [row for row in tasks if row["is_removed"]]
         self._current_tasks = tasks
@@ -361,6 +374,41 @@ class EventsPage(QWidget):
             self.major_filter.addItem(major, major)
         self.major_filter.setCurrentIndex(max(0, self.major_filter.findData(current)))
         self.major_filter.blockSignals(False)
+
+    def _sync_assignment_filters(self):
+        if not self.event_id:
+            vendors = []
+            pm_assignees = []
+        else:
+            vendors = self.db.query(
+                """SELECT DISTINCT c.id,c.name FROM event_tasks t
+                   JOIN contacts c ON c.id=t.vendor_id
+                   WHERE t.event_id=? AND t.is_removed=0 ORDER BY c.name,c.id""",
+                (self.event_id,),
+            )
+            pm_assignees = self.db.query(
+                """SELECT DISTINCT c.id,c.name FROM event_tasks t
+                   JOIN contacts c ON c.id=t.pm_assignee_id
+                   WHERE t.event_id=? AND t.is_removed=0 ORDER BY c.name,c.id""",
+                (self.event_id,),
+            )
+        self._replace_filter_items(self.vendor_filter, "모든 업체", vendors)
+        self._replace_filter_items(self.pm_filter, "모든 담당자(PM)", pm_assignees)
+
+    @staticmethod
+    def _replace_filter_items(combo, all_label, rows):
+        current = combo.currentData()
+        values = tuple((row["name"], int(row["id"])) for row in rows)
+        existing = tuple((combo.itemText(index), combo.itemData(index)) for index in range(1, combo.count()))
+        if existing == values:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(all_label, None)
+        for label, value in values:
+            combo.addItem(label, value)
+        combo.setCurrentIndex(max(0, combo.findData(current)))
+        combo.blockSignals(False)
 
     @staticmethod
     def _style_status_item(item: QTableWidgetItem, status: str) -> None:

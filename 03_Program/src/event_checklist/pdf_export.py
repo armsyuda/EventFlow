@@ -62,7 +62,7 @@ def _safe_filename(value: str) -> str:
 
 
 def default_pdf_filename(event, kind: str, options: PdfOptions = PdfOptions(), printed_on=None,
-                         major: str = "", minor: str = "") -> str:
+                         major: str = "", minor: str = "", scope_label: str = "") -> str:
     label = {"checklist": "체크리스트", "settlement": "정산내역", "calendar": "달력"}[kind]
     output_date = (printed_on or date.today()).strftime("%Y%m%d")
     orientation = "세로" if options.orientation == "PORTRAIT" else "가로"
@@ -71,6 +71,8 @@ def default_pdf_filename(event, kind: str, options: PdfOptions = PdfOptions(), p
         parts.append(_safe_filename(major))
     if minor:
         parts.append(_safe_filename(minor))
+    if scope_label:
+        parts.append(_safe_filename(scope_label))
     parts.extend([output_date, f"{options.paper}{orientation}"])
     return "_".join(parts) + ".pdf"
 
@@ -410,13 +412,24 @@ def _checklist_a4_portrait(doc, tasks):
 
 
 def export_checklist_pdf(db, event_id: int, destination: Path, options: PdfOptions = PdfOptions(),
-                         major: str = ""):
+                         major: str = "", vendor_id: int | None = None,
+                         pm_assignee_id: int | None = None, scope_label: str = ""):
     service = EventService(db)
     event = service.get_event(event_id)
     if not event:
         raise ValueError("내보낼 행사를 찾을 수 없습니다.")
-    tasks = [dict(row) for row in service.list_tasks(event_id, major=major)]
-    context = "실행 업무 현황" + (f" · 대분류 {major}" if major else " · 전체")
+    tasks = [dict(row) for row in service.list_tasks(
+        event_id, major=major, vendor_id=vendor_id, pm_assignee_id=pm_assignee_id,
+    )]
+    if vendor_id is not None:
+        scope = f"업체 {scope_label}"
+    elif pm_assignee_id is not None:
+        scope = f"담당자(PM) {scope_label}"
+    elif major:
+        scope = f"대분류 {major}"
+    else:
+        scope = "전체"
+    context = f"실행 업무 현황 · {scope}"
     doc = _Document(destination, options, event, "행사 체크리스트", context)
     try:
         if options.paper == "A4" and options.orientation == "PORTRAIT":
@@ -460,7 +473,11 @@ def _calendar_week_lanes(tasks, week):
     return segments, len(lanes)
 
 
-def _calendar_filter_label(major: str, minor: str, count: int) -> str:
+def _calendar_filter_label(major: str, minor: str, count: int, scope_label: str = "",
+                           *, is_pm: bool = False) -> str:
+    if scope_label:
+        kind = "담당자(PM)" if is_pm else "업체"
+        return f"{kind} {scope_label} · {count}개"
     if minor:
         return f"{major} · {minor} · {count}개"
     if major:
@@ -519,14 +536,17 @@ def _draw_calendar_page(doc, weeks, week_lanes, year, month, lane_start, lane_ca
 
 def export_calendar_pdf(db, event_id: int, destination: Path, year: int, month: int,
                         options: PdfOptions = PdfOptions("A4", "LANDSCAPE"),
-                        major: str = "", minor: str = ""):
+                        major: str = "", minor: str = "", vendor_id: int | None = None,
+                        pm_assignee_id: int | None = None, scope_label: str = ""):
     service = EventService(db)
     event = service.get_event(event_id)
     if not event:
         raise ValueError("내보낼 행사를 찾을 수 없습니다.")
     first = date(year, month, 1)
     last = date(year, month, calendar.monthrange(year, month)[1])
-    tasks = [dict(row) for row in service.calendar_range(first, last, event_id, major, minor)]
+    tasks = [dict(row) for row in service.calendar_range(
+        first, last, event_id, major, minor, vendor_id, pm_assignee_id,
+    )]
     weeks = _calendar_weeks(year, month)
     week_lanes = [_calendar_week_lanes(tasks, week) for week in weeks]
     # Landscape favors wider labels; portrait favors more vertical lanes.
@@ -538,7 +558,9 @@ def export_calendar_pdf(db, event_id: int, destination: Path, year: int, month: 
     }[(options.paper, options.orientation)]
     max_lanes = max((count for _, count in week_lanes), default=0)
     page_count = max(1, (max_lanes + capacity - 1) // capacity)
-    summary = _calendar_filter_label(major, minor, len(tasks))
+    summary = _calendar_filter_label(
+        major, minor, len(tasks), scope_label, is_pm=pm_assignee_id is not None,
+    )
     doc = _Document(destination, options, event, "행사 달력", f"{year}년 {month}월 일정")
     try:
         for page_index in range(page_count):
