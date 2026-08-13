@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from event_checklist.backup import create_backup, create_manual_backup, create_rotating_auto_backup, restore_backup
 from event_checklist.export import default_excel_filename, export_excel, next_available_excel_path
 from event_checklist.pdf_export import (
-    PdfOptions, default_pdf_filename, export_calendar_pdf, export_checklist_pdf,
+    PdfOptions, _checklist_standard_columns, default_pdf_filename, export_calendar_pdf, export_checklist_pdf,
     export_settlement_pdf, next_available_pdf_path, settlement_header_summary,
 )
 from event_checklist.services import EventService
@@ -222,6 +222,15 @@ def test_checklist_and_settlement_pdf_export_all_paper_orientations(db, tmp_path
             assert not image.isNull()
             document.close()
     app.processEvents()
+
+
+def test_landscape_checklist_header_has_order_and_fills_the_full_table_width():
+    headers, widths = _checklist_standard_columns(789.5)
+    assert headers[:3] == ["순서", "대분류", "중분류"]
+    assert headers[-1] == "전화번호"
+    assert len(headers) == len(widths) == 12
+    assert widths[0] == 24
+    assert abs(sum(widths) - 789.5) < 1e-9
 
 
 def test_pdf_default_filename_and_same_day_sequence(db, tmp_path):

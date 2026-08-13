@@ -300,6 +300,20 @@ def _fit_rows(available, compact_height, roomy_height, count, compact_limit):
     return roomy_height, 10
 
 
+def _checklist_standard_columns(total_width: float) -> tuple[list[str], list[float]]:
+    """Return a complete, gap-free header and width model for wide checklist PDFs."""
+    headers = [
+        "순서", "대분류", "중분류", "항목", "세부내용", "상태", "작업 시작일", "마감일",
+        "PM 담당자", "업체", "업체담당자", "전화번호",
+    ]
+    order_width = 24.0
+    ratios = [.052, .065, .125, .255, .060, .065, .065, .065, .070, .070, .073]
+    data_width = max(0.0, total_width - order_width)
+    ratio_total = sum(ratios)
+    widths = [order_width] + [data_width * ratio / ratio_total for ratio in ratios]
+    return headers, widths
+
+
 def _checklist_standard(doc, tasks):
     c = doc.canvas; sx, sy = c.sx, c.sy
     landscape = doc.options.orientation == "LANDSCAPE"
@@ -314,17 +328,20 @@ def _checklist_standard(doc, tasks):
     available = doc.base_h - 76 - 42 - head_h
     row_h, font_size = _fit_rows(available, compact_h, roomy_h, len(tasks), compact_limit)
     per_page = max(1, int(available // row_h))
-    ratios = [.052, .065, .125, .255, .060, .065, .065, .065, .070, .070, .073]
-    table_w = doc.base_w - 2 * doc.margin - 24
-    widths_base = [table_w * ratio for ratio in ratios]
+    table_w = doc.base_w - 2 * doc.margin
+    headers, all_widths_base = _checklist_standard_columns(table_w)
+    order_w, widths_base = all_widths_base[0], all_widths_base[1:]
     for page_start in range(0, len(tasks) or 1, per_page):
         page_rows = tasks[page_start:page_start + per_page]
         y = doc.start_page(_progress(tasks))
-        headers = ["대분류", "중분류", "항목", "세부내용", "상태", "작업 시작일", "마감일", "PM 담당자", "업체", "업체담당자", "전화번호"]
-        x = doc.margin + 24
-        c.rect(x * sx, y * sy, table_w * sx, head_h * sy, HEADER, None, 5 * c.scale)
+        x = doc.margin + order_w
+        c.rect(doc.margin * sx, y * sy, table_w * sx, head_h * sy, HEADER, None, 5 * c.scale)
+        c.text(
+            _scaled_rect(c, doc.margin, y, order_w, head_h), headers[0], 6.5, MUTED, True,
+            Qt.AlignmentFlag.AlignCenter,
+        )
         cx = x
-        for label, width in zip(headers, widths_base):
+        for label, width in zip(headers[1:], widths_base):
             c.text(_scaled_rect(c, cx, y, width, head_h), label, 6.5, MUTED, True, Qt.AlignmentFlag.AlignCenter)
             cx += width
         body_top = (y + head_h) * sy
@@ -333,8 +350,8 @@ def _checklist_standard(doc, tasks):
         for index, task in enumerate(page_rows):
             ry = body_top + index * row_h * sy
             rh = row_h * sy
-            c.rect(doc.margin * sx, ry, 24 * sx, rh, QColor("white") if index % 2 == 0 else SOFT, LINE)
-            c.text(QRectF(doc.margin * sx, ry, 24 * sx, rh), str(page_start + index + 1), font_size - 1.5, MUTED, False, Qt.AlignmentFlag.AlignCenter)
+            c.rect(doc.margin * sx, ry, order_w * sx, rh, QColor("white") if index % 2 == 0 else SOFT, LINE)
+            c.text(QRectF(doc.margin * sx, ry, order_w * sx, rh), str(page_start + index + 1), font_size - 1.5, MUTED, False, Qt.AlignmentFlag.AlignCenter)
             values = [task["major"], task["minor"], task["name"], task["detail"], task["status"],
                       _short_date(task["planned_start"]), _short_date(task["due_date"]),
                       task["pm_assignee_name"] or "미지정", task["vendor_name"] or "미지정",
