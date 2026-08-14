@@ -120,6 +120,19 @@ def test_master_item_cell_can_be_edited_directly(tmp_path):
     page.close(); db.close()
 
 
+def test_master_toolbar_orders_and_deemphasizes_actions(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "master-toolbar.db"); page = MasterPage(db)
+    buttons = [page.add_button, page.edit_button, page.delete_button, page.fit_columns_button]
+    assert [page.toolbar_layout.indexOf(button) for button in buttons] == [2, 3, 4, 5]
+    assert [button.text() for button in buttons] == ["+ 항목 추가", "선택 수정", "선택 삭제", "열 너비 맞춤"]
+    assert page.add_button.width() > page.edit_button.width()
+    assert page.add_button.width() > page.delete_button.width()
+    assert page.delete_button.property("quiet") is True
+    assert page.delete_button.property("danger") is None
+    page.close(); db.close()
+
+
 def test_calendar_lanes_prioritize_nearest_incomplete_deadlines():
     app = QApplication.instance() or QApplication([]); timeline = MonthTimeline(); timeline.set_month(2026, 9)
     rows = [
