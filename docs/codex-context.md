@@ -1,5 +1,22 @@
 # Codex 작업 연속성
 
+## 2026-08-16 v0.3.37 엑셀 수량·단위, PDF 가로 정렬, (업체 미정) 숨김, 드래그 드롭 순위
+
+- [엑셀] 체크리스트 엑셀 가로·세로 모두에 `수량`·`단위` 열을 추가(PDF 와 동일). 기존에는 수량·단위가 빠져 있었다. `export.py/_checklist_sheet` 헤더·폭·값·스타일 열 인덱스를 수량(6)·단위(7) 추가 기준으로 재배치했고, 세부내용은 좌측·나머지는 가운데를 유지한다.
+- [PDF 정렬 버그] 체크리스트 가로/ A3 표준(`pdf_export._checklist_standard`)에서 세부내용(인덱스 3)을 `col==4`로 잘못 매겨 수량이 좌측, 세부내용이 가운데로 나오던 것을 `col==3`으로 고쳐 수정. 세로(A4 portrait)는 원래 정상. 이제 가로도 세부내용 좌측·수량 가운데.
+- [(업체 미정)] 시드 업체 `(업체 미정)` 을 업체 콤보 목록에서 제외. DB 에 있는 `(업체 미정)`(id)은 유지하되 `_vendors` 에서 빼고, 이 업체가 배정된 업무는 업체칸을 '미지정'으로 표시한다. vendor_filter 와 column 11 current 도 숨김 업체를 감안해 처리.
+- [드래그 드롭] 체크리스트·정산내역 테이블에 행 드래그 드롭 순서 변경 추가. `FastEditableTable.enable_row_drag(on_reorder)` + 커스텀 `dropEvent`(QTableWidget 의 기본 행 이동은 막고 페이지가 재조회로 반영). 같은 중분류 내에서는 순서만 변경, 중분류·대분류가 달라지는 드롭은 안내 후 승인받아 분류 변경. `services.reorder_tasks(event_id, task_id, target_task_id, new_major/new_minor, before)` 가 sort_order 를 10 단위로 재할당.
+- 스키마 변경 없음(마이그레이션 불필요). 자동검사 116개 통과.
+
+## 2026-08-16 체크리스트 프리랜서 할당 UI + 바탕화면 디버그 로그 제거
+
+- [프리랜서 할당] 체크리스트에서 업체→업체담당자 흐름에만 담당자를 배정할 수 있어, 업체가 없는 프리랜서(소속 없는 개인)에게는 작업을 배정할 방법이 없던 문제를 해결했다.
+- [프리랜서 할당] 업체(column 11) 콤보의 맨 위(미지정 다음)에 "프리랜서" 그룹을 추가했다. "프리랜서"를 고르면 업체담당자(column 12)에 프리랜서 개인 목록이 나오고, 개인을 선택해 배정한다.
+- [프리랜서 할당] 데이터 모델은 기존 규칙을 그대로 따른다. 프리랜서는 업체가 없으므로 `event_tasks.vendor_id` 는 NULL 을 유지하고 `assignee_id` 만 저장한다. 외래키(`vendor_id REFERENCES contacts`)를 깨지 않아 기존 스키마 v8과 마이그레이션이 전혀 없다.
+- [프리랜서 할당] 판단 근거는 (1) assignee 가 프리랜서(company_id IS NULL)인 경우와 (2) 방금 프리랜서 그룹을 골라 아직 개인을 안 고른 상태(업체 셀 data == FREELANCER_KEY) 두 신호를 함께 본다. 기존에 프리랜서 assignee 를 가진 작업이 있다면 업체 칸이 자동으로 "프리랜서"로 표시된다.
+- [로그 제거] 단위 콤보 드롭다운 문제는 해결됐고(필요할 경우 `references/editable-combo-external-release.md` 에 남음) 이제 진단용 바탕화면 로그(`DebugLogDropdown` `EventFlow-dropdown-debug.log`) 를 만들던 `src/event_checklist/debug_log.py` 모듈과 app.py/widets.py/events_page.py 의 모든 로깅 호출을 삭제했다. 콤보 소속 유지용 실기능(`_swallow_release` 가드, `_PopupReleaseGuard` 이벤트 필터, `popup_open/popup_closed` 연결)은 그대로 보존했다.
+- 자동검사 112개 통과(기존 111 + `test_checklist_freelancer_group_is_first_and_saves_as_assignee`). 스키마 변경 없음.
+
 ## 2026-08-14 문서·스키마 정리
 
 - 마스터 문서 필드 표를 database.py schema v8 DDL에서 추출하도록 생성기를 고친 뒤 docs 마스터 docx를 다시 만들었다. events.venue는 location+organizer, contacts.email/note는 job_title+role_note(이메일 컬럼 없음)로 맞추었다.

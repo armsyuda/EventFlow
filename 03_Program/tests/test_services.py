@@ -360,3 +360,41 @@ def test_calendar_hides_completed_bars_but_lists_completed_last(db):
     assert tasks[0]["id"] not in {row["id"] for row in bars}
     assert listed[-1]["status"] == "완료"
     assert listed[0]["status"] == "진행중"
+
+
+def test_reorder_tasks_swaps_order_within_same_minor_and_moves_across_major(db):
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 4")
+    event_id = service.create_event("순서 이동", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+    assert len(tasks) >= 3
+
+    first, second, third = tasks[0], tasks[1], tasks[2]
+    assert first["major"] == second["major"] == third["major"]
+
+    # 같은 중분류 내에서 두 번째 항목을 첫 번째 앞으로 이동 → 순서가 뒤바뀐다.
+    service.reorder_tasks(event_id, second["id"], first["id"], before=True)
+    after = service.list_tasks(event_id)
+    ordered_ids = [row["id"] for row in after]
+    assert ordered_ids.index(second["id"]) < ordered_ids.index(first["id"])
+
+    # 다른 중분류(다른 major)로 드래그 → new_major/new_minor 로 분류가 바뀌고 위치가 이동한다.
+    # 세 번째 항목의 major 를 첫 번째와 다르게 만들기 힘들면 다른 major 를 만들어 이동시킨다.
+    target_major = third["major"] + "_이동"
+    service.reorder_tasks(event_id, second["id"], third["id"], before=True,
+                          new_major=target_major, new_minor="새소분류")
+    moved = service.db.one("SELECT id,major,minor FROM event_tasks WHERE id=?", (second["id"],))
+    assert moved["major"] == target_major and moved["minor"] == "새소분류"
+    after2 = service.list_tasks(event_id)
+    # 이동된 항목은 이제 새 분류에 속하므로 그 major 그룹 안에서 반복되어 나타난다.
+    moved_rows = [row for row in after2 if row["major"] == target_major]
+    assert moved_rows and all(row["id"] == second["id"] for row in moved_rows)
+
+
+def test_reorder_tasks_noop_when_target_is_self(db):
+    service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY id LIMIT 1")
+    event_id = service.create_event("순서 유지", date(2026, 9, 1), None, [master["id"]])
+    task = service.list_tasks(event_id)[0]
+    service.reorder_tasks(event_id, task["id"], task["id"])
+    assert service.list_tasks(event_id)[0]["id"] == task["id"]

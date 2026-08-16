@@ -1361,3 +1361,110 @@ def test_spreadsheet_pages_have_no_priority_ui_and_remain_immediately_scrollable
     for page in pages:
         page.close()
     db.close()
+
+
+def test_checklist_freelancer_group_is_first_and_saves_as_assignee(tmp_path):
+    """업체 콤보에서 '프리랜서'가 맨 위에 나오고, 프리랜서 개인은 업체담당자 콤보에서 선택되어
+    vendor_id 는 NULL, assignee_id 로만 저장되어 재조회 후에도 유지되는지 검증."""
+    from event_checklist.ui.events_page import FREELANCER_KEY
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "freelancer-flow.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("프리랜서 할당", date.today(), date.today() + timedelta(days=3), master_ids)
+    window = MainWindow(db, enable_update_check=False)
+    window.select_event(event_id)
+    QTest.qWait(80)
+
+    vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','업체 가')").lastrowid
+    vendor_person = db.execute(
+        "INSERT INTO contacts(kind,name,phone,company_id) VALUES ('PERSON','업체 담당','010-0000-0001',?)", (vendor,)
+    ).lastrowid
+    freelancer = db.execute(
+        "INSERT INTO contacts(kind,name,phone) VALUES ('PERSON','개인 프리랜서','')"
+    ).lastrowid
+    # company_id 를 명시적으로 NULL 로 두어 프리랜서로 분류되게 한다.
+    db.execute("UPDATE contacts SET company_id=NULL,phone='010-0000-0002' WHERE id=?", (freelancer,))
+    window.settings.contacts_changed.emit()
+    QTest.qWait(100)
+
+    page = window.events
+    # 프리랜서가 프리랜서 목록에 포함된다.
+    assert freelancer in page._freelancer_ids
+
+    # 업체 콤보를 열면 '프리랜서'가 두 번째(미지정 다음, 업체보다 위)에 온다.
+    page._open_cell_editor(0, 11)
+    editor = page.table.cellWidget(0, 11)
+    freelancer_index = editor.findData(FREELANCER_KEY)
+    vendor_index = editor.findData(vendor)
+    assert freelancer_index >= 0 and vendor_index >= 0
+    assert freelancer_index < vendor_index, "프리랜서는 업체보다 위에 있어야 한다."
+    page.table.close_cell_editor()
+
+    # 업체 콤보에서 '프리랜서'를 선택하면 vendor_id 는 NULL, 셀 표시는 '프리랜서'.
+    task = page._task_for_row(0)
+    page._commit_vendor(0, task, FREELANCER_KEY, None)
+    row = db.one("SELECT vendor_id,assignee_id FROM event_tasks WHERE id=?", (task["id"],))
+    assert row["vendor_id"] is None
+    assert page.table.item(0, 11).text() == "프리랜서"
+
+    # 프리랜서 상태에서 업체담당자 콤보에는 프리랜서 개인이 나온다.
+    page._open_cell_editor(0, 12)
+    contact_editor = page.table.cellWidget(0, 12)
+    assert contact_editor.findData(freelancer) >= 0
+    assert contact_editor.findData(vendor_person) < 0, "업체 소속 담당자는 프리랜서 목록에 없어야 한다."
+    page.table.close_cell_editor()
+
+    # 프리랜서 개인을 선택하면 assignee_id 로 저장되고 전화번호가 표시된다.
+    page._commit_vendor_contact(0, task, freelancer, [])
+    row = db.one("SELECT vendor_id,assignee_id FROM event_tasks WHERE id=?", (task["id"],))
+    assert row["vendor_id"] is None
+    assert row["assignee_id"] == freelancer
+    assert page.table.item(0, 13).text() == "010-0000-0002"
+
+    # 재조회 후에도 프리랜서 상태가 유지된다.
+    page.refresh_tasks()
+    assert page.table.item(0, 11).text() == "프리랜서"
+
+    window.close(); db.close()
+
+
+def test_hidden_vendor_is_excluded_from_combo_and_shown_as_unassigned(tmp_path):
+    """'(업체 미정)' 업체는 업체 콤보에서 제외되고, 이미 배정된 업무는 '미지정'으로 표시된다."""
+    from event_checklist.ui.events_page import HIDDEN_VENDOR_NAME
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "hidden-vendor.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("숨김 업체 행사", date.today(), date.today() + timedelta(days=3), master_ids)
+    window = MainWindow(db, enable_update_check=False)
+    window.select_event(event_id)
+    QTest.qWait(80)
+
+    hidden_vendor = db.execute(
+        "INSERT INTO contacts(kind,name) VALUES ('VENDOR', ?)", (HIDDEN_VENDOR_NAME,)
+    ).lastrowid
+    normal_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','보이는 업체')").lastrowid
+    # 한 업무에 '(업체 미정)' 을 배정한다.
+    task = window.events._task_for_row(0)
+    db.execute("UPDATE event_tasks SET vendor_id=? WHERE id=?", (hidden_vendor, task["id"]))
+    window.events.refresh_tasks()
+
+    page = window.events
+    # 숨김 업체는 _vendors 에 없고, 정상 업체는 있다.
+    assert hidden_vendor not in {row["id"] for row in page._vendors}
+    assert normal_vendor in {row["id"] for row in page._vendors}
+
+    # '(업체 미정)' 이 배정된 업무는 업체칸이 '미지정' 으로 표시된다.
+    assert page.table.item(0, 11).text() == "미지정"
+
+    # 업체 콤보에 숨김 업체가 없어야 한다.
+    page._open_cell_editor(0, 11)
+    editor = page.table.cellWidget(0, 11)
+    assert editor.findData(normal_vendor) >= 0
+    assert editor.findData(hidden_vendor) < 0, "'(업체 미정)' 은 콤보에서 보이면 안 된다."
+    page.table.close_cell_editor()
+    window.close(); db.close()
+

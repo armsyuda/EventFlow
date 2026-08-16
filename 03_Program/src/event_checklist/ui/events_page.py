@@ -20,6 +20,17 @@ from .pdf_export_dialog import configure_pdf_icon_button, export_pdf_from_page
 
 STATUSES = ["미착수", "진행중", "확인요청", "완료", "보류", "해당없음"]
 
+# 업체 콤보에서 프리랜서 그룹을 고유하게 식별하는 sentinel.
+# contacts.id 는 정수이므로 문자열 sentinel 과 충돌하지 않는다.
+# 프리랜서는 업체(vendor)가 없는 개인(PERSON, company_id IS NULL)이므로
+# event_tasks.vendor_id 는 NULL 로 유지하고 assignee_id 로만 표현한다.
+FREELANCER_KEY = "__FREELANCER__"
+
+# 콤보 업체 목록에서 숨길 업체 이름. DB에 이미 '(업체 미정)' 이라는 시드 업체가 존재해
+# '미지정' 항목과 중복되므로 업체 선택 콤보에서는 제외한다. 실제 업무에 배정돼 있어도
+# 데이터는 건드리지 않고 표시만 '미지정'으로 처리한다.
+HIDDEN_VENDOR_NAME = "(업체 미정)"
+
 
 class EventsPage(QWidget):
     edit_requested = Signal(int)
@@ -33,6 +44,8 @@ class EventsPage(QWidget):
         self.loading = False
         self._loaded_event_id: int | None = None
         self._current_tasks = []
+        self._freelancer_ids: set[int] = set()
+        self._hide_vendor_ids: set[int] = set()
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 28, 32, 32)
         root.setSpacing(14)
@@ -137,6 +150,7 @@ class EventsPage(QWidget):
         self.table.set_fixed_columns({0: 48})
         self.table.set_left_columns({4})  # 세부내용은 좌측 정렬
         self.table.cellDoubleClicked.connect(self._open_cell_editor)
+        self.table.enable_row_drag(self._handle_row_drag)
         root.addWidget(self.table, 1)
 
     def set_event(self, event_id: int | None, *, force: bool = False):
@@ -287,22 +301,31 @@ class EventsPage(QWidget):
         # 설정에서 추가한 업체와 담당자를 별도의 행사 참여자 편집 없이 바로
         # 선택할 수 있도록 전체 연락처를 한 번 읽고 업체별로 나눈다.
         vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name,id")
+        # '(업체 미정)' 시드 업체는 업체 선택 목록에서 숨기되, 이미 배정된 업무 표시 처리용으로 id 는 보관한다.
+        visible_vendors = [v for v in vendors if v["name"] != HIDDEN_VENDOR_NAME]
+        hidden_vendor_ids = {int(v["id"]) for v in vendors if v["name"] == HIDDEN_VENDOR_NAME}
         all_assignees = self.db.query(
             """SELECT p.*,v.name company_name FROM contacts p
-               LEFT JOIN contacts v ON v.id=p.company_id
-               WHERE p.kind='PERSON' ORDER BY p.name,COALESCE(v.name,''),p.id"""
+              LEFT JOIN contacts v ON v.id=p.company_id
+              WHERE p.kind='PERSON' ORDER BY p.name,COALESCE(v.name,''),p.id"""
         )
         assignees_by_vendor = {
             int(vendor["id"]): [row for row in all_assignees if row["company_id"] == vendor["id"]]
-            for vendor in vendors
+            for vendor in visible_vendors
         }
+        freelancers = [row for row in all_assignees if row["company_id"] is None]
+        # 특정 assignee 가 프리랜서인지 빠르게 판단하기 위한 id → person 매핑.
+        freelancer_ids = {int(row["id"]) for row in freelancers}
         pm_assignees = [
             row for row in all_assignees
             if event and event["pm_vendor_id"] and row["company_id"] == event["pm_vendor_id"]
         ]
         self.table.clearContents(); self.table.setRowCount(len(tasks))
-        self._vendors = vendors
+        self._vendors = visible_vendors
+        self._hide_vendor_ids = hidden_vendor_ids
         self._all_assignees = all_assignees
+        self._freelancers = freelancers
+        self._freelancer_ids = freelancer_ids
         self._assignees_by_vendor = assignees_by_vendor
         self._pm_assignees = pm_assignees
         for row_index, task in enumerate(tasks):
@@ -354,9 +377,19 @@ class EventsPage(QWidget):
                 cell = QTableWidgetItem(text); cell.setData(Qt.ItemDataRole.UserRole, task_id)
                 cell.setData(int(Qt.ItemDataRole.UserRole) + 1, data); cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row_index, column, cell)
-            vendor = QTableWidgetItem(task["vendor_name"] or "미지정")
+            # 프리랜서 할당(assignee 가 업체 소속이 아닌 개인)이면 업체칸은 '프리랜서'로 표시.
+            is_freelancer = int(task["assignee_id"]) in self._freelancer_ids if task["assignee_id"] else False
+            # 숨긴 '(업체 미정)' 업체가 배정된 업무는 '미지정'으로 표시.
+            vendor_is_hidden = task["vendor_id"] and int(task["vendor_id"]) in self._hide_vendor_ids
+            vendor_text = (
+                "프리랜서" if is_freelancer
+                else ("미지정" if vendor_is_hidden else (task["vendor_name"] or "미지정"))
+            )
+            vendor = QTableWidgetItem(vendor_text)
             vendor.setData(Qt.ItemDataRole.UserRole, task_id)
-            vendor.setData(int(Qt.ItemDataRole.UserRole) + 1, task["vendor_id"])
+            # 숨긴 '(업체 미정)' 업체는 '미지정'(None)으로 취급해 콤보에서 매칭되지 않게 한다.
+            vendor_cell_value = FREELANCER_KEY if is_freelancer else (None if vendor_is_hidden else task["vendor_id"])
+            vendor.setData(int(Qt.ItemDataRole.UserRole) + 1, vendor_cell_value)
             vendor.setFlags(vendor.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row_index, 11, vendor)
             contact = QTableWidgetItem(assignee_name); contact.setData(Qt.ItemDataRole.UserRole, task_id)
@@ -394,9 +427,11 @@ class EventsPage(QWidget):
         else:
             vendors = self.db.query(
                 """SELECT DISTINCT c.id,c.name FROM event_tasks t
-                   JOIN contacts c ON c.id=t.vendor_id
-                   WHERE t.event_id=? AND t.is_removed=0 ORDER BY c.name,c.id""",
-                (self.event_id,),
+                  JOIN contacts c ON c.id=t.vendor_id
+                  WHERE t.event_id=? AND t.is_removed=0
+                    AND c.name <> ?
+                  ORDER BY c.name,c.id""",
+                (self.event_id, HIDDEN_VENDOR_NAME),
             )
             pm_assignees = self.db.query(
                 """SELECT DISTINCT c.id,c.name FROM event_tasks t
@@ -435,9 +470,60 @@ class EventsPage(QWidget):
     def _assignee_label(person) -> str:
         return person_display_label(person)
 
+    def _is_freelancer_task(self, task) -> bool:
+        """task 의 담당자가 프리랜서(업체 소속이 아닌 개인)인지 여부."""
+        return bool(task["assignee_id"]) and int(task["assignee_id"]) in self._freelancer_ids
+
+    def _handle_row_drag(self, source_row: int, target_row: int, before: bool) -> bool:
+        """드래그 드롭으로 항목 순서를 변경한다.
+
+        같은 중분류 내에서는 순서만 바꾸고, 중분류·대분류가 달라지는 자리에 놓으면
+        분류 변경 안내 후 승인받아 반영한다. 승인되면 DB sort_order 를 재배치하고
+        화면을 재조회한다.
+        """
+        if self.loading or not self.event_id:
+            return False
+        source = self._task_for_row(source_row)
+        target = self._task_for_row(target_row) if target_row < len(self._current_tasks) else None
+        if source is None or target is None or int(source["id"]) == int(target["id"]):
+            return False
+        if source.get("is_removed") or target.get("is_removed"):
+            return False
+        same_major = source["major"] == target["major"]
+        same_minor = same_major and source["minor"] == target["minor"]
+        try:
+            if same_minor:
+                self.service.reorder_tasks(self.event_id, int(source["id"]), int(target["id"]), before=before)
+            else:
+                ret = QMessageBox.question(
+                    self, "분류 변경",
+                    f"'{source['name']}' 항목의 분류가\n"
+                    f"[{source['major']} > {source['minor']}] 에서\n"
+                    f"[{target['major']} > {target['minor']}] (으)로 바뀝니다.\n"
+                    f"이동하시겠습니까?",
+                )
+                if ret != QMessageBox.StandardButton.Yes:
+                    return False
+                self.service.reorder_tasks(
+                    self.event_id, int(source["id"]), int(target["id"]),
+                    new_major=target["major"], new_minor=target["minor"], before=before,
+                )
+        except Exception as exc:
+            QMessageBox.warning(self, "순서 변경 실패", str(exc))
+            return False
+        self.refresh_tasks()
+        self.changed.emit(self.event_id or 0)
+        return True
+
+    def _freelancer_state_from_cell(self, row: int) -> bool:
+        """업체(column 11) 셀이 '프리랜서'로 설정되어 있는지 여부.
+        방금 프리랜서 그룹을 골라 assignee 가 아직 안 정해진 상태도 처리한다."""
+        cell = self.table.item(row, 11)
+        if cell is None:
+            return self._is_freelancer_task(self._task_for_row(row))
+        return cell.data(int(Qt.ItemDataRole.UserRole) + 1) == FREELANCER_KEY
+
     def _open_cell_editor(self, row: int, column: int) -> None:
-        from ..debug_log import get_dropdown_logger as _log
-        _log().info("EventsPage._open_cell_editor row=%s col=%s (단위=6)", row, column)
         if self.loading or column not in {3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
             return
         task = self._task_for_row(row)
@@ -469,11 +555,19 @@ class EventsPage(QWidget):
             self.table.open_choice_editor(row, column, choices, task["pm_assignee_id"],
                                           lambda value: self._commit_simple(row, task, column, "pm_assignee_id", value, choices))
         elif column == 11:
-            choices = [("미지정", None)] + [(x["name"], x["id"]) for x in self._vendors]
-            self.table.open_choice_editor(row, column, choices, task["vendor_id"],
+            # 업체 콤보: 프리랜서 그룹을 맨 위(미지정 다음)에 두고 그 뒤에 업체를 나열한다.
+            choices = [("미지정", None), ("프리랜서", FREELANCER_KEY)] + [(x["name"], x["id"]) for x in self._vendors]
+            cell = self.table.item(row, 11)
+            cell_data = cell.data(int(Qt.ItemDataRole.UserRole) + 1) if cell is not None else None
+            current = FREELANCER_KEY if self._freelancer_state_from_cell(row) else cell_data
+            self.table.open_choice_editor(row, column, choices, current,
                                           lambda value: self._commit_vendor(row, task, value, choices))
         elif column == 12:
-            rows = self._assignees_by_vendor.get(int(task["vendor_id"]), []) if task["vendor_id"] else []
+            # 프리랜서 상태이면 프리랜서 개인 목록을, 아니면 선택한 업체 소속 담당자 목록을 보여준다.
+            if self._freelancer_state_from_cell(row):
+                rows = self._freelancers
+            else:
+                rows = self._assignees_by_vendor.get(int(task["vendor_id"]), []) if task["vendor_id"] else []
             choices = [("미지정", None)] + [(self._assignee_label(x), x["id"]) for x in rows]
             self.table.open_choice_editor(row, column, choices, task["assignee_id"],
                                           lambda value: self._commit_vendor_contact(row, task, value, choices))
@@ -536,16 +630,24 @@ class EventsPage(QWidget):
 
     def _commit_vendor(self, row, task, vendor_id, choices):
         task_id = int(task["id"]); assignee_id = task["assignee_id"]
-        fields = {"vendor_id": vendor_id}
+        is_freelancer = vendor_id == FREELANCER_KEY
+        # 프리랜서는 업체(vendor)가 없으므로 vendor_id 는 NULL 로 저장한다.
+        fields = {"vendor_id": None if is_freelancer else vendor_id}
         if assignee_id:
-            rows = self._assignees_by_vendor.get(int(vendor_id), []) if vendor_id else []
-            allowed = {int(x["id"]) for x in rows}
-            if int(assignee_id) not in allowed:
-                QMessageBox.information(self, "담당자 변경 안내", "새 업체 소속과 맞지 않는 기존 담당자를 미지정으로 전환합니다.")
-                fields["assignee_id"] = None; task["assignee_id"] = None
-                task["assignee_phone"] = ""; self.table.item(row, 12).setText("미지정"); self.table.item(row, 13).setText("")
-        self.service.update_task(task_id, **fields); task["vendor_id"] = vendor_id
-        cell = self.table.item(row, 11); cell.setText(next((x for x, data in choices if data == vendor_id), "미지정"))
+            if is_freelancer:
+                # 프리랜서로 전환: 업체소속 담당자는 미지정으로 정리하고 프리랜서 개인을 새로 고르게 한다.
+                if assignee_id not in self._freelancer_ids:
+                    fields["assignee_id"] = None; task["assignee_id"] = None
+                    task["assignee_phone"] = ""; self.table.item(row, 12).setText("미지정"); self.table.item(row, 13).setText("")
+            else:
+                rows = self._assignees_by_vendor.get(int(vendor_id), []) if vendor_id else []
+                allowed = {int(x["id"]) for x in rows}
+                if int(assignee_id) not in allowed:
+                    QMessageBox.information(self, "담당자 변경 안내", "새 업체 소속과 맞지 않는 기존 담당자를 미지정으로 전환합니다.")
+                    fields["assignee_id"] = None; task["assignee_id"] = None
+                    task["assignee_phone"] = ""; self.table.item(row, 12).setText("미지정"); self.table.item(row, 13).setText("")
+        self.service.update_task(task_id, **fields); task["vendor_id"] = None if is_freelancer else vendor_id
+        cell = self.table.item(row, 11); cell.setText("프리랜서" if is_freelancer else next((x for x, data in choices if data == vendor_id), "미지정"))
         cell.setData(int(Qt.ItemDataRole.UserRole) + 1, vendor_id); self.changed.emit(self.event_id or 0)
 
     def _update(self, task_id, **values):

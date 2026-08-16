@@ -290,6 +290,54 @@ class EventService:
             )
         return len(ids)
 
+    def reorder_tasks(self, event_id: int, task_id: int, target_task_id: int,
+                      *, new_major: str | None = None, new_minor: str | None = None,
+                      before: bool = True) -> None:
+        """드래그 드롭으로 task 를 target_task 앞(before) 또는 뒤(after)로 이동한다.
+
+        list_tasks 의 표시 순서 = (대분류 최소 sort_order, 중분류 최소 sort_order,
+        개별 sort_order, id) 이므로, 분류 그룹핑을 유지한 채 task 를 원하는 위치에
+        끼워 넣고 전체 sort_order 를 10 단위로 재할당해 재조회 순서를 그대로
+        재현한다.
+
+        - new_major / new_minor 를 주면 task 의 분류를 변경한다(분류 변경 승인 후).
+        - task_id 와 target_task_id 가 같은 분류 내라면 그 안에서만 순서가 바뀐다.
+        """
+        if target_task_id == task_id:
+            return
+        # 분류를 바꾸려면 먼저 갱신한다(기존 소속에서 분리되어 목표 위치에 끼워진다).
+        fields: dict[str, object] = {}
+        if new_major is not None:
+            fields["major"] = new_major
+        if new_minor is not None:
+            fields["minor"] = new_minor
+        if fields:
+            fields["id"] = task_id
+            self.db.execute(
+                "UPDATE event_tasks SET major=:major, minor=:minor, updated_at=CURRENT_TIMESTAMP WHERE id=:id",
+                {"major": fields.get("major"), "minor": fields.get("minor"), "id": task_id},
+            )
+
+        # 현재 표시 순서(분류 그룹핑 포함)를 가져온다.
+        tasks = self.list_tasks(event_id)
+        order = [int(t["id"]) for t in tasks]
+        if task_id not in order:
+            return
+        if target_task_id not in order:
+            return
+
+        # task_id 를 목표 위치에서 제거한 뒤, target_task_id 앞/뒤에 다시 삽입한다.
+        order.remove(task_id)
+        target_index = order.index(target_task_id)
+        insert_at = target_index if before else target_index + 1
+        order.insert(insert_at, task_id)
+
+        with self.db.transaction() as conn:
+            for index, tid in enumerate(order):
+                conn.execute(
+                    "UPDATE event_tasks SET sort_order=? WHERE id=?", ((index + 1) * 10, tid)
+                )
+
     def set_completed(self, task_id: int, completed: bool) -> None:
         self.update_task(task_id, status="완료" if completed else "미착수")
 

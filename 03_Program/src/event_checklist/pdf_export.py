@@ -369,7 +369,8 @@ def _checklist_standard(doc, tasks):
                         c.rect(cx + (width - badge_w) / 2, ry + (rh - 14 * sy) / 2, badge_w, 14 * sy, bg, None, 7 * c.scale)
                         c.text(QRectF(cx, ry, width, rh), value, font_size - 1.5, fg, True, Qt.AlignmentFlag.AlignCenter)
                     else:
-                        align = Qt.AlignmentFlag.AlignLeft if col == 4 else Qt.AlignmentFlag.AlignCenter
+                        # values 인덱스: 0 major, 1 minor, 2 name, 3 detail(세부내용), 4 quantity(수량), ...
+                        align = Qt.AlignmentFlag.AlignLeft if col == 3 else Qt.AlignmentFlag.AlignCenter
                         pad = 4 * sx if align == Qt.AlignmentFlag.AlignLeft else 0
                         c.text(QRectF(cx + pad, ry, width - 2 * pad, rh), value, font_size - 1.2, INK, col == 2, align)
                 cx += width

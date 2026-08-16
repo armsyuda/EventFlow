@@ -85,8 +85,8 @@ def test_a4_portrait_excel_expands_two_line_cells_for_large_checklist(db, tmp_pa
     workbook = load_workbook(path, read_only=False, data_only=False)
     sheet = workbook["체크리스트"]
     assert sheet["D7"].font.sz == 10
-    assert "\n" in sheet["G7"].value
-    assert sheet["G7"].alignment.wrap_text is True
+    assert "\n" in sheet["I7"].value  # I열(9열)=시작일\n업체 (수량·단위 두 열 추가로 이동)
+    assert sheet["I7"].alignment.wrap_text is True
     assert min(sheet.row_dimensions[row].height for row in range(7, sheet.max_row + 1)) >= 34
     assert max(sheet.row_dimensions[row].height for row in range(7, sheet.max_row + 1)) > 34
     workbook.close()
@@ -293,3 +293,27 @@ def test_checklist_pdf_exports_only_selected_major(db, tmp_path):
     assert document.pageCount() == 1
     assert not document.render(0, document.pagePointSize(0).toSize()).isNull()
     document.close(); app.processEvents()
+
+
+def test_checklist_excel_includes_quantity_and_unit_columns(db, tmp_path):
+    """엑셀 체크리스트에도 PDF 처럼 수량·단위 열이 출력된다(가로·세로 모두)."""
+    event_id = _event(db)
+    db.execute(
+        "UPDATE event_tasks SET quantity=3,unit='대' WHERE id=(SELECT MIN(id) FROM event_tasks WHERE event_id=?)",
+        (event_id,),
+    )
+    for paper, orientation in (("A3", "LANDSCAPE"), ("A4", "PORTRAIT")):
+        path = export_excel(
+            db, tmp_path / f"checklist-qty-{paper}-{orientation}.xlsx", event_id, "checklist",
+            PdfOptions(paper, orientation),
+        )
+        workbook = load_workbook(path, read_only=False, data_only=False)
+        sheet = workbook["체크리스트"]
+        headers = [sheet.cell(6, column).value for column in range(1, sheet.max_column + 1)]
+        assert "수량" in headers and "단위" in headers
+        # 첫 데이터 행(7행)의 수량·단위 값이 실제 업무값과 일치한다.
+        qty_col = headers.index("수량") + 1
+        unit_col = headers.index("단위") + 1
+        assert sheet.cell(7, qty_col).value == "3"
+        assert sheet.cell(7, unit_col).value == "대"
+        workbook.close()

@@ -96,6 +96,7 @@ class SettlementPage(QWidget):
         configure_editable_table(self.table, [90, 110, 180, 90, 80, 130, 130, 105, 110, 130, 150, 270], grouped=True, anchor_column=0)
         self.table.set_left_columns({11})  # 메모는 좌측 정렬
         self.table.cellDoubleClicked.connect(self._open_cell_editor)
+        self.table.enable_row_drag(self._handle_row_drag)
         root.addWidget(self.table, 1)
 
     def _selected_task_ids(self):
@@ -154,6 +155,7 @@ class SettlementPage(QWidget):
         self._apply_summary_header(summary)
         vendors = self.db.query("SELECT * FROM contacts WHERE kind='VENDOR' ORDER BY name,id")
         self._vendors = vendors; self._items = {}; self._task_rows = {}; self._subtotal_rows = {}
+        self._task_by_row: dict[int, int] = {}
         current_major = None
         for item in summary["items"]:
             if current_major is not None and item["major"] != current_major:
@@ -166,6 +168,46 @@ class SettlementPage(QWidget):
         self.table.apply_category_spans(0, 1)
         self.loading = False
         self.table.blockSignals(False); self.table.setUpdatesEnabled(True); self.table.viewport().update()
+
+    def _handle_row_drag(self, source_row: int, target_row: int, before: bool) -> bool:
+        """드래그 드롭으로 항목 순서를 변경한다(체크리스트와 동일 규칙).
+
+        같은 중분류 내에서는 순서만 바꾸고, 중분류·대분류가 달라지면 안내 후
+        승인받아 반영한다. 소계·합계 행은 task 행이 아니므로 드래그 대상이 아니다.
+        """
+        if self.loading or not self.event_id:
+            return False
+        src_id = self._task_by_row.get(source_row)
+        tgt_id = self._task_by_row.get(target_row)
+        if src_id is None or tgt_id is None or src_id == tgt_id:
+            return False
+        src = self._items[src_id]; tgt = self._items[tgt_id]
+        same_major = src["major"] == tgt["major"]
+        same_minor = same_major and src["minor"] == tgt["minor"]
+        try:
+            if same_minor:
+                self.service.reorder_tasks(self.event_id, src_id, tgt_id, before=before)
+            else:
+                ret = QMessageBox.question(
+                    self, "분류 변경",
+                    f"'{src['name']}' 항목의 분류가\n"
+                    f"[{src['major']} > {src['minor']}] 에서\n"
+                    f"[{tgt['major']} > {tgt['minor']}] (으)로 바뀝니다.\n"
+                    f"이동하시겠습니까?",
+                )
+                if ret != QMessageBox.StandardButton.Yes:
+                    return False
+                self.service.reorder_tasks(
+                    self.event_id, src_id, tgt_id,
+                    new_major=tgt["major"], new_minor=tgt["minor"], before=before,
+                )
+        except Exception as exc:
+            QMessageBox.warning(self, "순서 변경 실패", str(exc))
+            return False
+        self.refresh()
+        self.changed.emit(self.event_id or 0)
+        return True
+
 
     def _apply_summary_header(self, summary):
         event = summary["event"]
@@ -190,7 +232,7 @@ class SettlementPage(QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
         task_id = int(item["id"])
-        self._items[task_id] = dict(item); self._task_rows[task_id] = row
+        self._items[task_id] = dict(item); self._task_rows[task_id] = row; self._task_by_row[row] = task_id
         values = [
             item["major"], item["minor"], item["name"], str(int(item["quantity"] or 0)), item["unit"] or "식",
             money(item["unit_price"]), money(item["supply"]), "10%" if item["vat_type"] == "TAXABLE" else "면세",

@@ -215,11 +215,14 @@ def _checklist_sheet(wb, event, tasks, options: PdfOptions, major: str, minor: s
     ws.title = "체크리스트"
     portrait = options.paper == "A4" and options.orientation == "PORTRAIT"
     if portrait:
-        headers = ["순서", "대분류", "중분류", "항목", "세부내용", "진행", "시작일\n업체", "마감일\n업체담당자", "PM 담당자\n전화번호"]
-        widths = [5, 8, 10, 17, 34, 9, 17, 17, 18]
+        # 순서/대분류/중분류/항목/세부내용/수량/단위/진행/시작일업체/마감일업체담당자/PM담당자전화번호
+        headers = ["순서", "대분류", "중분류", "항목", "세부내용", "수량", "단위", "진행",
+                   "시작일\n업체", "마감일\n업체담당자", "PM 담당자\n전화번호"]
+        widths = [5, 8, 10, 16, 30, 7, 7, 8, 16, 17, 17]
     else:
-        headers = ["순서", "대분류", "중분류", "항목", "세부내용", "상태", "작업 시작일", "마감일", "PM 담당자", "업체", "업체담당자", "전화번호"]
-        widths = [5, 9, 11, 18, 38, 10, 13, 13, 14, 15, 15, 17]
+        headers = ["순서", "대분류", "중분류", "항목", "세부내용", "수량", "단위", "상태",
+                   "작업 시작일", "마감일", "PM 담당자", "업체", "업체담당자", "전화번호"]
+        widths = [5, 9, 11, 17, 34, 7, 7, 9, 11, 11, 11, 13, 13, 14]
     context = "실행 업무 현황"
     if minor:
         context += f" · {major} > {minor}"
@@ -233,16 +236,18 @@ def _checklist_sheet(wb, event, tasks, options: PdfOptions, major: str, minor: s
     group_rows = []
     for index, task in enumerate(tasks, 1):
         row = 6 + index
+        qty = str(int(task["quantity"] or 0))
+        unit = task["unit"] or "식"
         if portrait:
             values = [
-                index, task["major"], task["minor"], task["name"], task["detail"] or "", task["status"],
+                index, task["major"], task["minor"], task["name"], task["detail"] or "", qty, unit, task["status"],
                 f"{task['planned_start'] or '미입력'}\n{task['vendor_name'] or '미지정'}",
                 f"{task['due_date'] or '미입력'}\n{task['assignee_name'] or '미지정'}",
                 f"{task['pm_assignee_name'] or '미지정'}\n{task['assignee_phone'] or ''}",
             ]
         else:
             values = [
-                index, task["major"], task["minor"], task["name"], task["detail"] or "", task["status"],
+                index, task["major"], task["minor"], task["name"], task["detail"] or "", qty, unit, task["status"],
                 task["planned_start"] or "미입력", task["due_date"] or "미입력",
                 task["pm_assignee_name"] or "미지정", task["vendor_name"] or "미지정",
                 task["assignee_name"] or "미지정", task["assignee_phone"] or "",
@@ -251,21 +256,22 @@ def _checklist_sheet(wb, event, tasks, options: PdfOptions, major: str, minor: s
         row_fill = None if index % 2 else SOFT
         for column, value in enumerate(values, 1):
             cell = ws.cell(row, column, value)
+            # 세부내용은 좌측 정렬, 나머지는 가운데(수량·단위 포함).
             is_detail = column == 5
             _style_body_cell(
                 cell, font_size=font_size, bold=column == 4,
-                horizontal="left" if is_detail else "center", wrap=is_detail or (portrait and column >= 7),
+                horizontal="left" if is_detail else "center", wrap=is_detail or (portrait and column >= 9),
                 fill=row_fill,
             )
         fg, bg = STATUS_COLORS.get(task["status"], (MUTED, MINOR_SOFT))
-        status = ws.cell(row, 6)
+        status = ws.cell(row, 8)
         status.fill = PatternFill("solid", fgColor=bg)
         status.font = Font(name="맑은 고딕", size=max(7, font_size - 1), bold=True, color=fg)
         detail_lines = _wrapped_line_count(task["detail"], widths[4], font_size)
         if portrait:
             stacked_lines = max(
                 _wrapped_line_count(values[column - 1], widths[column - 1], font_size)
-                for column in (7, 8, 9)
+                for column in (9, 10, 11)
             )
             ws.row_dimensions[row].height = _content_row_height(
                 font_size, max(2, detail_lines, stacked_lines), 28 if font_size == 8 else 34,
