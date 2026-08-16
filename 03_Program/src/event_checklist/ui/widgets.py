@@ -23,6 +23,7 @@ class AppComboBox(QComboBox):
     """Shared combo box with a clipped, consistently styled popup."""
 
     popup_closed = Signal()
+    popup_open = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,6 +31,7 @@ class AppComboBox(QComboBox):
 
     def showPopup(self) -> None:
         self._popup_open = True
+        self.popup_open.emit()
         self._polish_popup()
         try:
             super().showPopup()
@@ -362,6 +364,11 @@ class FastEditableTable(QTableWidget):
             editor.setCurrentText(str(current or ""))
 
         finished = False
+        active = False  # 드롭다운이 실제로 열려 사용자 선택이 진행 중인 상태
+
+        def mark_active():
+            nonlocal active
+            active = True
 
         def apply_choice(*_args):
             nonlocal finished
@@ -390,11 +397,13 @@ class FastEditableTable(QTableWidget):
         editor.activated.connect(apply_choice)
         editor.popup_closed.connect(close_cancelled_popup)
         if editable:
-            # Opening an editable combo popup temporarily moves focus away
-            # from its line edit on Windows.  That emits editingFinished even
-            # though the user has not selected or entered anything yet.
+            # Windows에서 editable 콤보의 팝업을 열면 focus가 잠시 lineEdit을
+            # 벗어나 editingFinished가 조기에 발생한다. this-open_editor 시점에
+            # 아직 팝업이 안 열렸으면(showPopup 예약 전) 이를 초기화 노이즈로
+            # 무시한다. popup_open 플래그가 참이 된 뒤에만 실제 선택으로 처리.
+            editor.popup_open.connect(mark_active)
             editor.lineEdit().editingFinished.connect(
-                lambda: None if editor.popup_is_open() else apply_choice()
+                lambda: None if not active or editor.popup_is_open() else apply_choice()
             )
         self.open_cell_editor(row, column, editor)
         # Offscreen test platforms cannot safely own native popup windows after
