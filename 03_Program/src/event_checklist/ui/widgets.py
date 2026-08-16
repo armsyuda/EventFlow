@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-from PySide6.QtCore import QDate, QEvent, QLocale, QPoint, QRect, QTimer, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, QLocale, QObject, QPoint, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QCalendarWidget, QComboBox, QDateEdit,
@@ -246,6 +246,61 @@ class AddableChoiceField(QWidget):
         self.add_button.setToolTip(text)
 
 
+class _PopupReleaseGuard(QObject):
+    """콤보 팝업을 연 직후, 더블클릭 잔여 마우스 릴리스가 팝업을 닫지 않도록 차단.
+
+    로그 분석 결과, editable 콤보에서 popup을 열면 더블클릭의 두 번째 마우스
+    릴리스가 '팝업 외부 클릭'으로 인식돼 QComboBox가 hidePopup을 호출한다.
+    이 릴리스는 콤보의 event()로 오지 않아 기존 가드(_swallow_release)로는
+    못 막는다. 애플리케이션 전역 이벤트 필터로 팝업 열림 직후 짧은 시간 동안
+    마우스 릴리스를 소비해 팝업을 지킨다.
+    """
+
+    ACTIVE_WINDOW_MS = 250
+
+    def __init__(self):
+        super().__init__()
+        self._active_until = 0.0
+        self._swallow_release = False  # 활성 창 동안 첫 release 1회를 소비
+        qt_app = QApplication.instance()
+        if qt_app is not None:
+            qt_app.installEventFilter(self)
+
+    def arm(self) -> None:
+        import time
+        self._active_until = time.monotonic() + self.ACTIVE_WINDOW_MS
+        self._swallow_release = True
+
+    def eventFilter(self, watched, event) -> bool:
+        import time
+        if not self._swallow_release:
+            return False
+        if time.monotonic() > self._active_until:
+            self._swallow_release = False
+            return False
+        # 활성 창 동안 도착하는 마우스 릴리스(팝업 밖 잔여 클릭)를 소비한다.
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            _dbg_logger().info("전역 가드: 팝업 밖 잔여 마우스 릴리스 소비(watched=%s)", type(watched).__name__)
+            self._swallow_release = False
+            return True
+        return False
+
+
+_popup_guard: _PopupReleaseGuard | None = None
+
+
+def _get_popup_guard() -> _PopupReleaseGuard:
+    global _popup_guard
+    if _popup_guard is None:
+        _popup_guard = _PopupReleaseGuard()
+    return _popup_guard
+
+
+def arm_popup_release_guard() -> None:
+    """단위 콤보 등 popup을 열기 직전에 호출해 잔여 릴리스를 걸러낸다."""
+    _get_popup_guard().arm()
+
+
 class FastEditableTable(QTableWidget):
     """Spreadsheet table that creates only the editor for the active cell."""
 
@@ -485,6 +540,9 @@ class FastEditableTable(QTableWidget):
         # the transient cell editor is removed.  The real Windows application
         # still opens the choices immediately with the first cell click.
         if QApplication.platformName() != "offscreen":
+            # 더블클릭 잔여 마우스 릴리스가 '팝업 외부 클릭'으로 감지돼 popup이
+            # 닫히는 것을 막기 위해, 팝업을 여는 직전에 전역 릴리스 가드에 arm.
+            arm_popup_release_guard()
             QTimer.singleShot(0, editor.showPopup)
 
     def open_number_editor(self, row: int, column: int, value, commit, *, money=False) -> None:
