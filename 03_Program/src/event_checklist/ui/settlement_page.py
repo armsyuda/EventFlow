@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QAbstractItemView, QDoubleSpinBox, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -166,8 +166,55 @@ class SettlementPage(QWidget):
             self._add_subtotal_row(current_major, summary["categories"][current_major])
         self._add_total_row(summary)
         self.table.apply_category_spans(0, 1)
+        from .widgets import install_category_cell_widgets
+        install_category_cell_widgets(self.table, 0, 1, self._edit_category_name, self._move_category)
         self.loading = False
         self.table.blockSignals(False); self.table.setUpdatesEnabled(True); self.table.viewport().update()
+
+    def _edit_category_name(self, major: str, minor: str | None) -> None:
+        """분류 이름을 더블클릭으로 변경한다. (대분류 또는 중분류)"""
+        if self.loading or not self.event_id:
+            return
+        current = major if minor is None else minor
+        label = "대분류" if minor is None else "중분류"
+        text, ok = QInputDialog.getText(self, f"{label} 이름 변경", f"새 {label} 이름:", text=current)
+        if not ok:
+            return
+        text = text.strip()
+        if not text or text == current:
+            return
+        try:
+            if minor is None:
+                self.service.rename_category(self.event_id, old_major=major, new_major=text)
+            else:
+                self.service.rename_category(self.event_id, old_major=major, old_minor=minor, new_minor=text)
+        except Exception as exc:
+            QMessageBox.warning(self, "분류 이름 변경 실패", str(exc))
+            return
+        self.refresh()
+        self.table.play_reorder_animation()
+        self.changed.emit(self.event_id or 0)
+
+    def _move_category(self, source_major: str, source_minor: str | None,
+                       target_major: str, target_minor: str | None, before: bool = True) -> None:
+        """분류 그룹을 목표 분류 앞(before) 또는 뒤(after)로 이동한다 (핸들 드래그)."""
+        if self.loading or not self.event_id:
+            return
+        if (source_major, source_minor) == (target_major, target_minor):
+            return
+        try:
+            self.service.move_category(
+                self.event_id,
+                major=source_major, minor=source_minor,
+                target_major=target_major, target_minor=target_minor,
+                before=before,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "분류 이동 실패", str(exc))
+            return
+        self.refresh()
+        self.table.play_reorder_animation()
+        self.changed.emit(self.event_id or 0)
 
     def _handle_row_drag(self, source_row: int, target_row: int, before: bool) -> bool:
         """드래그 드롭으로 항목 순서를 변경한다(체크리스트와 동일 규칙).
@@ -243,7 +290,9 @@ class SettlementPage(QWidget):
             10: item["vendor_id"], 11: item["note"] or "",
         }
         for column, value in enumerate(values):
-            cell = QTableWidgetItem(str(value))
+            # 대분류/중분류(0,1) 이름은 병합 셀 위젯(CategoryCell)이 표시하므로 Item 텍스트는 비운다.
+            text = "" if column in {0, 1} else str(value)
+            cell = QTableWidgetItem(text)
             cell.setData(Qt.ItemDataRole.UserRole, task_id)
             if column in {0, 1}:
                 cell.setData(GROUP_MAJOR_ROLE, item["major"])

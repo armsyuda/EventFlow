@@ -341,6 +341,84 @@ class EventService:
     def set_completed(self, task_id: int, completed: bool) -> None:
         self.update_task(task_id, status="완료" if completed else "미착수")
 
+    def rename_category(self, event_id: int, *, old_major: str, old_minor: str | None = None,
+                        new_major: str | None = None, new_minor: str | None = None) -> None:
+        """분류 이름을 일괄 변경한다.
+
+        - new_major 를 주면 해당 major 를 쓰는 모든 task 의 major 를 새 값으로 바꾼다.
+          (그 아래 중분류들은 major 만 바뀌고 minor 는 그대로 따라온다)
+        - new_minor 를 주면 old_major 안에서 old_minor 를 쓰는 task 의 minor 를 갱신한다.
+        - 편집 후 같은 분류의 MIN(sort_order) 가 유지되므로 그룹 순서는 그대로 유지된다.
+        """
+        assignments: list[str] = []
+        set_params: list[object] = []
+        if new_major is not None:
+            assignments.append("major=?")
+            set_params.append(str(new_major))
+        if new_minor is not None:
+            assignments.append("minor=?")
+            set_params.append(str(new_minor))
+        if not assignments:
+            return
+        # SET 파라미터가 먼저, THEN WHERE 파라미터 순서(SQL 자리 순서와 일치).
+        where = ["event_id=?", "major=?"]
+        where_params: list[object] = [event_id, str(old_major)]
+        if old_minor is not None:
+            if new_minor is None:
+                return  # 중분류 이름을 바꾸려면 new_minor 가 필요하다
+            where.append("minor=?")
+            where_params.append(str(old_minor))
+        elif new_minor is not None:
+            # 대분류만 지정했는데 new_minor 가 오는 경우는 허용하지 않는다.
+            return
+        with self.db.transaction() as conn:
+            conn.execute(
+                f"UPDATE event_tasks SET {', '.join(assignments)},updated_at=CURRENT_TIMESTAMP "
+                f"WHERE {' AND '.join(where)}",
+                tuple(set_params + where_params),
+            )
+
+    def move_category(self, event_id: int, *, major: str, minor: str | None = None,
+                      target_major: str, target_minor: str | None = None,
+                      before: bool = True) -> None:
+        """분류 그룹을 통째로 목표 분류 앞(before) 또는 뒤(after)로 이동한다.
+
+        major 만 주면 해당 대분류 그룹 전체를, major+minor 를 주면 그 중분류 그룹만
+        list_tasks 순서에서 목표 분류 앞/뒤로 옮긴 뒤 sort_order 를 재할당한다.
+        """
+        tasks = self.list_tasks(event_id)
+
+        def group_span(tasks, major, minor):
+            indexes = [i for i, t in enumerate(tasks)
+                       if t["major"] == major and (minor is None or t["minor"] == minor)]
+            if not indexes:
+                return None, None
+            return indexes[0], indexes[-1]
+
+        src_start, src_end = group_span(tasks, major, minor)
+        if src_start is None:
+            return
+        src_ids = [int(tasks[i]["id"]) for i in range(src_start, src_end + 1)]
+
+        # 나머지 task id 리스트에서 목표 분류의 id 를 찾아 그 앞/뒤에 source 그룹을 삽입한다.
+        remaining = [int(t["id"]) for t in tasks if int(t["id"]) not in set(src_ids)]
+        target_id_ref = None
+        for i, t in enumerate(tasks):
+            if t["major"] == target_major and (target_minor is None or t["minor"] == target_minor):
+                if i not in range(src_start, src_end + 1):
+                    target_id_ref = int(t["id"])
+                    break
+        if target_id_ref is None:
+            return
+        insert_at = remaining.index(target_id_ref) if before else remaining.index(target_id_ref) + 1
+        order = remaining[:insert_at] + src_ids + remaining[insert_at:]
+
+        with self.db.transaction() as conn:
+            for index, tid in enumerate(order):
+                conn.execute(
+                    "UPDATE event_tasks SET sort_order=? WHERE id=?", ((index + 1) * 10, tid)
+                )
+
     def dashboard(self, event_id: int) -> dict:
         row = self.db.one(
             """

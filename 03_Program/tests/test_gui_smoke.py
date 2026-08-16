@@ -34,7 +34,7 @@ from event_checklist.ui.settings_page import SettingsPage
 from event_checklist.ui.startup_splash import StartupSplash
 from event_checklist.theme import ComboPopupPolisher, InteractionCursorPolisher, application_stylesheet
 from event_checklist.ui.widgets import (
-    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, AppComboBox, DirectDateEdit, FastEditableTable, UnitComboBox,
+    GROUP_MAJOR_ROLE, GROUP_MINOR_ROLE, AppComboBox, CategoryCell, DirectDateEdit, FastEditableTable, UnitComboBox,
     SpreadsheetItemDelegate, configure_money_spin, configure_quantity_spin, fit_table_to_view,
 )
 from event_checklist.units import COMMON_UNITS
@@ -1093,7 +1093,11 @@ def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
     app.processEvents()
     assert all(page.table.property("embeddedEditors") is True for page in pages)
     assert all(page.table.verticalHeader().defaultSectionSize() == 48 for page in pages)
-    assert all(all(page.table.cellWidget(row, column) is None for row in range(page.table.rowCount()) for column in range(page.table.columnCount())) for page in pages)
+    assert all(
+        page.table.cellWidget(row, column) is None or isinstance(page.table.cellWidget(row, column), CategoryCell)
+        for page in pages
+        for row in range(page.table.rowCount()) for column in range(page.table.columnCount())
+    )
     settlement = pages[2]
     target = settlement.table.visualRect(settlement.table.model().index(0, 3))
     QTest.mouseClick(settlement.table.viewport(), Qt.MouseButton.LeftButton, pos=target.center())
@@ -1329,9 +1333,8 @@ def test_spreadsheet_pages_have_no_priority_ui_and_remain_immediately_scrollable
         assert perf_counter() - started < 0.75
         assert "우선순위" not in [page.table.horizontalHeaderItem(i).text() for i in range(page.table.columnCount())]
         assert all(
-            page.table.cellWidget(row, column) is None
-            for row in range(page.table.rowCount())
-            for column in range(page.table.columnCount())
+            page.table.cellWidget(row, column) is None or isinstance(page.table.cellWidget(row, column), CategoryCell)
+            for row in range(page.table.rowCount()) for column in range(page.table.columnCount())
         )
         started = perf_counter()
         page.table.verticalScrollBar().setValue(page.table.verticalScrollBar().maximum())
@@ -1467,4 +1470,63 @@ def test_hidden_vendor_is_excluded_from_combo_and_shown_as_unassigned(tmp_path):
     assert editor.findData(hidden_vendor) < 0, "'(업체 미정)' 은 콤보에서 보이면 안 된다."
     page.table.close_cell_editor()
     window.close(); db.close()
+
+
+def test_category_cell_widgets_enable_rename_and_group_move(tmp_path):
+    """체크리스트·정산의 대분류/중분류 셀에 CategoryCell 위젯이 배치되고,
+    콜백 호출 시 서비스가 분류 이름 변경/이동을 수행한다."""
+    from event_checklist.ui.widgets import CategoryCell
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "category-widgets.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    event_id = service.create_event("분류 위젯 검증", date.today(), date.today() + timedelta(days=3), master_ids)
+
+    checklist = EventsPage(service, db); checklist.set_event(event_id)
+    settlement = SettlementPage(service, db); settlement.set_event(event_id)
+    checklist.resize(1500, 700); settlement.resize(1500, 700)
+    checklist.show(); settlement.show(); app.processEvents()
+
+    # 체크리스트에 CategoryCell 위젯이 하나 이상 배치된 행이 있다.
+    cl_cells = [
+        (r, c) for r in range(checklist.table.rowCount())
+        for c in (1, 2)
+        if isinstance(checklist.table.cellWidget(r, c), CategoryCell)
+    ]
+    assert cl_cells, "체크리스트에 분류 위젯이 배치되어야 한다."
+
+    # 콜백으로 직접 이름 변경 요청을 해보면 (QInputDialog 는 monkeypatch 하지 않고
+    # 서비스 메서드 호출 경로로만 확인) rename_category 가 동작한다.
+    tasks = service.list_tasks(event_id)
+    major0 = tasks[0]["major"]; minor0 = tasks[0]["minor"]
+    new_major = major0 + "_X"
+    service.rename_category(event_id, old_major=major0, new_major=new_major)
+    # 실제로 major0 소속이었던 행 전부가 새 major 로 이동했는지
+    originally = [t for t in tasks if t["major"] == major0]
+    now_new = [t for t in service.list_tasks(event_id) if t["major"] == new_major]
+    assert len(now_new) == len(originally)
+
+    # 분류 이동 콜백(핸들 드래그 연결 대상)을 직접 호출해 대분류 이동이 반영되는지 확인.
+    majors = list(dict.fromkeys(t["major"] for t in service.list_tasks(event_id)))
+    if len(majors) >= 2:
+        first = majors[0]
+        second_major_id = next(t["id"] for t in service.list_tasks(event_id) if t["major"] == majors[1])
+        checklist._move_category(first, None, majors[1], None, before=False)
+        after_move = service.list_tasks(event_id)
+        first_pos = [i for i, t in enumerate(after_move) if t["major"] == first]
+        second_pos = next(i for i, t in enumerate(after_move) if t["id"] == second_major_id)
+        assert first_pos and first_pos[0] > second_pos, "대분류가 목표 대분류 뒤로 이동해야 한다."
+
+    # 정산에도 CategoryCell 이 배치된다 (소계 행 제외).
+    settlement.refresh()
+    st_cells = [
+        isinstance(settlement.table.cellWidget(r, c), CategoryCell)
+        for r in range(settlement.table.rowCount()) for c in (0, 1)
+    ]
+    assert any(st_cells), "정산에 분류 위젯이 배치되어야 한다."
+
+    for page in (checklist, settlement):
+        page.close()
+    db.close()
 

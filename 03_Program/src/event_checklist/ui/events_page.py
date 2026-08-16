@@ -4,7 +4,7 @@ from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QDateEdit, QDoubleSpinBox, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -335,9 +335,10 @@ class EventsPage(QWidget):
             order.setFlags(order.flags() & ~(Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsUserCheckable))
             self.table.setItem(row_index, 0, order)
             for column, text in ((1, task["major"]), (2, task["minor"])):
-                group = QTableWidgetItem(text)
+                group = QTableWidgetItem("")  # 분류 이름은 병합 셀 위젯이 표시한다.
                 group.setData(GROUP_MAJOR_ROLE, task["major"])
                 group.setData(GROUP_MINOR_ROLE, task["minor"])
+                group.setData(Qt.ItemDataRole.UserRole, task_id)
                 group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row_index, column, group)
             name = QTableWidgetItem(task["name"]); name.setData(Qt.ItemDataRole.UserRole, task_id)
@@ -400,6 +401,8 @@ class EventsPage(QWidget):
             self.table.setItem(row_index, 13, phone)
             self.table.setRowHeight(row_index, 48)
         self.table.apply_category_spans(1, 2)
+        from .widgets import install_category_cell_widgets
+        install_category_cell_widgets(self.table, 1, 2, self._edit_category_name, self._move_category)
         self.summary.setText(f"{len(tasks)}개 항목" + (" · 제외 기록" if self.removed_toggle.isChecked() else ""))
         self.loading = False
         self.table.blockSignals(False)
@@ -512,6 +515,7 @@ class EventsPage(QWidget):
             QMessageBox.warning(self, "순서 변경 실패", str(exc))
             return False
         self.refresh_tasks()
+        self.table.play_reorder_animation()
         self.changed.emit(self.event_id or 0)
         return True
 
@@ -522,6 +526,51 @@ class EventsPage(QWidget):
         if cell is None:
             return self._is_freelancer_task(self._task_for_row(row))
         return cell.data(int(Qt.ItemDataRole.UserRole) + 1) == FREELANCER_KEY
+
+    def _edit_category_name(self, major: str, minor: str | None) -> None:
+        """분류 이름을 더블클릭으로 변경한다. (대분류 또는 중분류)"""
+        if self.loading or not self.event_id:
+            return
+        current = major if minor is None else minor
+        label = "대분류" if minor is None else "중분류"
+        text, ok = QInputDialog.getText(self, f"{label} 이름 변경", f"새 {label} 이름:", text=current)
+        if not ok:
+            return
+        text = text.strip()
+        if not text or text == current:
+            return
+        try:
+            if minor is None:
+                self.service.rename_category(self.event_id, old_major=major, new_major=text)
+            else:
+                self.service.rename_category(self.event_id, old_major=major, old_minor=minor, new_minor=text)
+        except Exception as exc:
+            QMessageBox.warning(self, "분류 이름 변경 실패", str(exc))
+            return
+        self.refresh_tasks()
+        self.table.play_reorder_animation()
+        self.changed.emit(self.event_id or 0)
+
+    def _move_category(self, source_major: str, source_minor: str | None,
+                       target_major: str, target_minor: str | None, before: bool = True) -> None:
+        """분류 그룹을 목표 분류 앞(before) 또는 뒤(after)로 이동한다 (핸들 드래그)."""
+        if self.loading or not self.event_id:
+            return
+        if (source_major, source_minor) == (target_major, target_minor):
+            return
+        try:
+            self.service.move_category(
+                self.event_id,
+                major=source_major, minor=source_minor,
+                target_major=target_major, target_minor=target_minor,
+                before=before,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "분류 이동 실패", str(exc))
+            return
+        self.refresh_tasks()
+        self.table.play_reorder_animation()
+        self.changed.emit(self.event_id or 0)
 
     def _open_cell_editor(self, row: int, column: int) -> None:
         if self.loading or column not in {3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:

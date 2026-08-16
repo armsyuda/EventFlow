@@ -1,5 +1,14 @@
 # Codex 작업 연속성
 
+## 2026-08-16 v0.3.38 분류 이름 편집·분류 드래그 이동·재배치 애니메이션
+
+- [분류 이름 편집] 체크리스트·정산내역의 대분류/중분류 셀을 더블클릭하면 이름을 바꿀 수 있다. `services.rename_category(event_id, old_major, old_minor, new_major, new_minor)` 로 그 분류에 속한 모든 항목의 major/minor 를 일괄 갱신(그룹 이름 변경 방식). 재조회 후 순서는 유지된다.
+- [분류 드래그 이동] 대분류/중분류 셀에 작은 드래그 핸들(`CategoryCell` 위젯, 이름 라벨 + 하단 ⊙ 핸들)을 배치해, 핸들을 잡고 드롭한 위치의 분류 앞/뒤로 통째로 이동한다. `services.move_category` 가 그룹 전체 sort_order 를 재배치. 드롭 지점이 타겟 행 중심보다 아래면 뒤(after)로 이동.
+- [항목 개별 드래그] 기존 순서열/행 드래그(`reorder_tasks`)는 그대로 유지. 분류 위젯과 항목 드래그는 영역이 분리돼 충돌하지 않는다.
+- [애니메이션 A] 드래그/이동/이름변경 후 재조회 직전 테이블 viewport 에 짧은 opacity 페이드(`FastEditableTable.play_reorder_animation`)로 '자리가 바뀌었다'는 시각 단서를 준다. 성능 영향 최소.
+- 구현: `widgets.py`(`CategoryCell`, `install_category_cell_widgets`, `_category_at_global`, `play_reorder_animation`), `services.py`(`rename_category`, `move_category`), `events_page.py`·`settlement_page.py`(CategoryCell 배치 + `_edit_category_name`/`_move_category` 콜백).
+- 기존 '셀 위젯 없음' 테스트 계약은 CategoryCell 만 예외 허용하도록 갱신. 스키마 변경 없음. 자동검사 119개 통과.
+
 ## 2026-08-16 v0.3.37 엑셀 수량·단위, PDF 가로 정렬, (업체 미정) 숨김, 드래그 드롭 순위
 
 - [엑셀] 체크리스트 엑셀 가로·세로 모두에 `수량`·`단위` 열을 추가(PDF 와 동일). 기존에는 수량·단위가 빠져 있었다. `export.py/_checklist_sheet` 헤더·폭·값·스타일 열 인덱스를 수량(6)·단위(7) 추가 기준으로 재배치했고, 세부내용은 좌측·나머지는 가운데를 유지한다.

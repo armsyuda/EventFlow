@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-from PySide6.QtCore import QDate, QEvent, QLocale, QObject, QPoint, QRect, QTimer, Qt, Signal
+from PySide6.QtCore import QDate, QEasingCurve, QEvent, QLocale, QObject, QPoint, QPropertyAnimation, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QCalendarWidget, QComboBox, QDateEdit,
-    QDoubleSpinBox, QFrame, QHeaderView, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPushButton,
-    QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTableWidget, QVBoxLayout, QWidget,
+    QDialog, QDoubleSpinBox, QFrame, QGraphicsOpacityEffect, QHeaderView, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
+    QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..theme import TOKENS
@@ -394,6 +396,23 @@ class FastEditableTable(QTableWidget):
         merge_runs(major_column, lambda row: (category(row) or (None, None))[0])
         if minor_column is not None:
             merge_runs(minor_column, category)
+
+    def play_reorder_animation(self) -> None:
+        """드롭 후 재배치가 끝났음을 보여주는 짧은 페이드 효과.
+
+        행이 재정렬된 직후 opacity 를 살짝 낮췄다 되돌려 '자리가 바뀌었다'는 느낌을
+        준다. A 방식(간단한 페이드)이며 성능에 거의 영향을 주지 않는다.
+        """
+        effect = QGraphicsOpacityEffect(self.viewport())
+        self.viewport().setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(200)
+        anim.setStartValue(0.45)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.finished.connect(lambda: self.viewport().setGraphicsEffect(None))
+        self._reorder_anim = anim  # 참조 유지(GUI 수명 동안, 프로퍼티로 보존)
+        anim.start()
 
     def open_cell_editor(self, row: int, column: int, editor) -> None:
         self.close_cell_editor()
@@ -982,6 +1001,158 @@ def configure_data_table(table: QTableWidget, widths: list[int], *, alternating:
 def configure_resizable_table(table: QTableWidget, widths: list[int]) -> None:
     """Backward-compatible alias for the shared table configuration."""
     configure_data_table(table, widths)
+
+
+class CategoryCell(QWidget):
+    """병합된 대분류/중분류 셀에 얹는 위젯. 이름 라벨 + 작은 드래그 핸들로 구성.
+
+    - 이름 라벨 더블클릭 → on_edit(major, minor)
+    - 하단 핸들을 누르고 끌면 드래그로 분류 이동 → on_move(source_major, source_minor,
+      target_major, target_minor)
+
+    `minor is None` 이면 대분류 그룹(전체 major)을 나타낸다.
+    """
+
+    def __init__(self, major: str, minor: str | None, table, major_column: int, minor_column: int,
+                 major_only: bool, on_edit, on_move, parent=None):
+        super().__init__(parent)
+        self.major = major
+        self.minor = minor
+        self._table = table  # 드롭 목표 계산용 테이블 참조 (setCellWidget parent 와 무관하게 안정적)
+        self._major_column = major_column
+        self._minor_column = minor_column
+        self._major_only = major_only  # True 면 대분류 그룹, False 면 중분류 그룹
+        self._on_edit = on_edit
+        self._on_move = on_move
+        self._dragging = False
+        self._last_global = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 3)
+        layout.setSpacing(0)
+        self.label = QLabel(str(major if minor is None else f"{major} > {minor}"))
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setStyleSheet("background:transparent; font-weight:500;")
+        layout.addWidget(self.label, 1)
+        self.handle = QLabel("\u22ee")
+        self.handle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.handle.setFixedHeight(14)
+        self.handle.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.handle.setStyleSheet("color:#B4BAC0; border:none; background:transparent;")
+        layout.addWidget(self.handle, 0)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    # 이름 라벨 더블클릭 → 분류 이름 편집
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self._on_edit:
+            self._on_edit(self.major, self.minor)
+        event.accept()
+
+    # 핸들 드래그 → 분류 이동 (전역 이벤트 필터로 grabMouse 없이 안정적으로 동작)
+    def mousePressEvent(self, event) -> None:
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.handle.geometry().contains(event.position().toPoint())):
+            self._dragging = True
+            self._drag_source = (self.major, self.minor)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        if self._dragging and event.type() == QEvent.Type.MouseMove:
+            self._last_global = event.globalPosition().toPoint()
+            return False
+        if self._dragging and event.type() == QEvent.Type.MouseButtonRelease:
+            global_pos = getattr(self, "_last_global", event.globalPosition().toPoint())
+            self._end_drag(global_pos)
+            return True
+        return False
+
+    def _end_drag(self, global_pos) -> None:
+        self._dragging = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        if self._on_move and self._table is not None:
+            target = _category_at_global(self._table, self._major_column, self._minor_column, global_pos)
+            if target is None:
+                return
+            # 드롭 지점이 타겟 행의 중심보다 아래면 타겟 뒤(after=before False)로 이동하게 한다.
+            below = self._drop_below_center(global_pos)
+            if self._major_only:
+                target = (target[0], None)  # 대분류 이동은 minor 를 버린다
+            if target != (self.major, self.minor):
+                self._on_move(self.major, self.minor, target[0], target[1], not below)
+
+    def _drop_below_center(self, global_pos) -> bool:
+        viewport_pos = self._table.viewport().mapFromGlobal(global_pos)
+        index = self._table.indexAt(viewport_pos)
+        if not index.isValid():
+            return False
+        return viewport_pos.y() > self._table.visualRect(index).center().y()
+
+
+def _category_at_global(table, major_column: int, minor_column: int, global_pos):
+    """전역 좌표 기준 테이블 행의 (major, minor) 분류를 반환한다. 소계/합계 행은 None."""
+    table_pos = table.viewport().mapFromGlobal(global_pos)
+    index = table.indexAt(table_pos)
+    if not index.isValid():
+        return None
+    row = index.row()
+    major_item = table.item(row, major_column)
+    if major_item is None:
+        return None
+    major = major_item.data(GROUP_MAJOR_ROLE)
+    if major is None:
+        return None
+    minor = major_item.data(GROUP_MINOR_ROLE)
+    return str(major), str(minor or "")
+
+
+def install_category_cell_widgets(table: FastEditableTable, major_column: int, minor_column: int,
+                                  on_edit, on_move) -> None:
+    """병합된 분류 그룹 첫 행에 CategoryCell 위젯을 배치한다.
+
+    on_edit(major, minor): 분류 이름 편집 요청
+    on_move(source_major, source_minor, target_major, target_minor): 분류 이동 요청
+    (source_minor 가 None 이면 대분류 그룹 이동)
+    병합이 적용된 뒤에 호출한다.
+    """
+    # (major_column 또는 minor_column) 그룹 시작 행 목록: (row, column, major, minor)
+    def group_starts_for(column: int):
+        starts = []
+        last = None
+        for row in range(table.rowCount()):
+            item = table.item(row, column)
+            if item is None:
+                continue
+            major = item.data(GROUP_MAJOR_ROLE)
+            minor = item.data(GROUP_MINOR_ROLE)
+            # 소계·합계처럼 분류 role 이 없는 행은 건너뛴다(정산 테이블 대비).
+            if major is None:
+                continue
+            key = (major, minor)
+            if column == major_column:
+                key = (major, None)  # 대분류 그룹은 major 단위로만 묶는다
+            if key != last:
+                starts.append((row, column, str(major), str(minor or "") if column == minor_column else None))
+                last = key
+        return starts
+
+    for row, column, major, minor in group_starts_for(major_column):
+        table.setCellWidget(row, column, CategoryCell(
+            major, minor, table, major_column, minor_column, True,
+            lambda m, n: on_edit(m, n), on_move,
+        ))
+    for row, column, major, minor in group_starts_for(minor_column):
+        table.setCellWidget(row, column, CategoryCell(
+            major, minor, table, major_column, minor_column, False,
+            lambda m, n: on_edit(m, n), on_move,
+        ))
 
 
 def configure_editable_table(

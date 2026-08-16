@@ -398,3 +398,55 @@ def test_reorder_tasks_noop_when_target_is_self(db):
     task = service.list_tasks(event_id)[0]
     service.reorder_tasks(event_id, task["id"], task["id"])
     assert service.list_tasks(event_id)[0]["id"] == task["id"]
+
+
+def test_rename_category_updates_all_contained_tasks_and_keeps_order(db):
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")
+    event_id = service.create_event("분류 이름 변경", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+    old_major = tasks[0]["major"]
+    old_minor = tasks[0]["minor"]
+    contained = [t for t in tasks if t["major"] == old_major]
+    assert len(contained) >= 1
+
+    order_before = [t["id"] for t in tasks]
+    new_major = old_major + "_새"
+    service.rename_category(event_id, old_major=old_major, new_major=new_major)
+    after = service.list_tasks(event_id)
+    # 같은 major 였던 항목들은 모두 새 major 로 따라간다.
+    moved = [t for t in after if t["major"] == new_major]
+    assert {t["id"] for t in moved} == {t["id"] for t in contained}
+    assert all(t["minor"] == old_minor for t in moved)
+
+    # 중분류 개별 이름 변경
+    service.rename_category(event_id, old_major=new_major, old_minor=old_minor, new_minor="새중분류")
+    after2 = service.list_tasks(event_id)
+    assert all(t["minor"] == "새중분류" for t in after2 if t["major"] == new_major)
+
+
+def test_move_category_reorders_whole_group(db):
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 6")
+    event_id = service.create_event("분류 이동", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+    majors = list(dict.fromkeys(t["major"] for t in tasks))
+    if len(majors) < 2:
+        # 중분류가 부족하면 이벤트에 중분류를 넣도록 증설
+        for m in ("가분류", "나분류"):
+            db.execute(
+                "INSERT INTO event_tasks(event_id,major,minor,name,status,sort_order) VALUES (?,?,?,?,?,?)",
+                (event_id, m, "소분류", "항목", "미착수", 10000),
+            )
+        tasks = service.list_tasks(event_id)
+        majors = list(dict.fromkeys(t["major"] for t in tasks))
+    assert len(majors) >= 2
+
+    first_major_groups = [t for t in tasks if t["major"] == majors[0]]
+    second_major_id = next(t["id"] for t in tasks if t["major"] == majors[1])
+    # 첫 번째 대분류 전체를 두 번째 대분류 뒤로 이동
+    service.move_category(event_id, major=majors[0], target_major=majors[1], before=False)
+    after = service.list_tasks(event_id)
+    positions = [i for i, t in enumerate(after) if t["major"] == majors[0]]
+    second_pos = next(i for i, t in enumerate(after) if t["id"] == second_major_id)
+    assert positions and positions[0] > second_pos, "첫 대분류가 두 번째 대분류보다 뒤로 이동해야 한다."
