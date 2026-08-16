@@ -303,11 +303,12 @@ def _fit_rows(available, compact_height, roomy_height, count, compact_limit):
 def _checklist_standard_columns(total_width: float) -> tuple[list[str], list[float]]:
     """Return a complete, gap-free header and width model for wide checklist PDFs."""
     headers = [
-        "순서", "대분류", "중분류", "항목", "세부내용", "상태", "작업 시작일", "마감일",
+        "순서", "대분류", "중분류", "항목", "세부내용", "수량", "단위", "상태", "작업 시작일", "마감일",
         "PM 담당자", "업체", "업체담당자", "전화번호",
     ]
     order_width = 24.0
-    ratios = [.052, .065, .125, .255, .060, .065, .065, .065, .070, .070, .073]
+    # 세부내용 비중을 일부 줄여 수량·단위 공간을 확보하고, 총 폭은 페이지 크기 안에 유지한다.
+    ratios = [.050, .060, .120, .155, .045, .045, .052, .060, .060, .060, .065, .065, .068]
     data_width = max(0.0, total_width - order_width)
     ratio_total = sum(ratios)
     widths = [order_width] + [data_width * ratio / ratio_total for ratio in ratios]
@@ -352,7 +353,8 @@ def _checklist_standard(doc, tasks):
             rh = row_h * sy
             c.rect(doc.margin * sx, ry, order_w * sx, rh, QColor("white") if index % 2 == 0 else SOFT, LINE)
             c.text(QRectF(doc.margin * sx, ry, order_w * sx, rh), str(page_start + index + 1), font_size - 1.5, MUTED, False, Qt.AlignmentFlag.AlignCenter)
-            values = [task["major"], task["minor"], task["name"], task["detail"], task["status"],
+            values = [task["major"], task["minor"], task["name"], task["detail"],
+                      str(int(task["quantity"] or 0)), task["unit"] or "식", task["status"],
                       _short_date(task["planned_start"]), _short_date(task["due_date"]),
                       task["pm_assignee_name"] or "미지정", task["vendor_name"] or "미지정",
                       task["assignee_name"] or "미지정", task["assignee_phone"] or ""]
@@ -361,13 +363,13 @@ def _checklist_standard(doc, tasks):
             for col, (value, width) in enumerate(zip(values, widths)):
                 c.rect(cx, ry, width, rh, QColor("white") if index % 2 == 0 else SOFT, LINE)
                 if col not in (0, 1):
-                    if col == 4:
+                    if col == 7:
                         fg, bg = STATUS.get(str(value), (MUTED, MINOR_SOFT))
                         badge_w = min(width - 6 * sx, 38 * sx)
                         c.rect(cx + (width - badge_w) / 2, ry + (rh - 14 * sy) / 2, badge_w, 14 * sy, bg, None, 7 * c.scale)
                         c.text(QRectF(cx, ry, width, rh), value, font_size - 1.5, fg, True, Qt.AlignmentFlag.AlignCenter)
                     else:
-                        align = Qt.AlignmentFlag.AlignLeft if col == 3 else Qt.AlignmentFlag.AlignCenter
+                        align = Qt.AlignmentFlag.AlignLeft if col == 4 else Qt.AlignmentFlag.AlignCenter
                         pad = 4 * sx if align == Qt.AlignmentFlag.AlignLeft else 0
                         c.text(QRectF(cx + pad, ry, width - 2 * pad, rh), value, font_size - 1.2, INK, col == 2, align)
                 cx += width
@@ -381,9 +383,10 @@ def _checklist_a4_portrait(doc, tasks):
     available = doc.base_h - 76 - 42 - head_h
     row_h, font_size = _fit_rows(available, compact_h, roomy_h, len(tasks), compact_limit)
     per_page = max(1, int(available // row_h))
-    widths_base = [20, 35, 40, 65, 135, 35, 71, 71, 71]
-    headers = ["순서", "대분류", "중분류", "항목", "세부내용", "진행", "시작일", "마감일", "PM 담당자"]
-    subs = ["", "", "", "", "", "", "업체", "업체담당자", "전화번호"]
+    # 열 폭 합계를 A4 세로 가용 폭(595.28-2*26=543pt)과 정확히 일치시켜 우측 빈 공간을 없앤다.
+    widths_base = [20, 34, 40, 60, 100, 34, 33, 33, 62, 63, 64]
+    headers = ["순서", "대분류", "중분류", "항목", "세부내용", "수량", "단위", "진행", "시작일", "마감일", "PM 담당자"]
+    subs = ["", "", "", "", "", "", "", "", "업체", "업체담당자", "전화번호"]
     for page_start in range(0, len(tasks) or 1, per_page):
         page_tasks = tasks[page_start:page_start + per_page]
         y = doc.start_page(_progress(tasks))
@@ -392,7 +395,7 @@ def _checklist_a4_portrait(doc, tasks):
         c.rect(x * sx, y * sy, table_w * sx, head_h * sy, HEADER, None, 5 * c.scale)
         cx = x
         for col, (label, width) in enumerate(zip(headers, widths_base)):
-            if col < 6:
+            if col < 8:
                 c.text(_scaled_rect(c, cx, y, width, head_h), label, 6.2, MUTED, True, Qt.AlignmentFlag.AlignCenter)
             else:
                 c.text(_scaled_rect(c, cx, y, width, head_h / 2), label, 5.3, MUTED, True, Qt.AlignmentFlag.AlignCenter)
@@ -404,7 +407,8 @@ def _checklist_a4_portrait(doc, tasks):
         draw_rows = []
         for index, task in enumerate(page_tasks):
             ry = body_top + index * row_h * sy; rh = row_h * sy
-            values = [task["major"], task["minor"], task["name"], task["detail"], task["status"]]
+            values = [task["major"], task["minor"], task["name"], task["detail"],
+                      str(int(task["quantity"] or 0)), task["unit"] or "식", task["status"]]
             draw_rows.append(values)
             cx = x * sx
             for width in widths:
@@ -412,13 +416,16 @@ def _checklist_a4_portrait(doc, tasks):
             c.text(QRectF(x * sx, ry, widths[0], rh), str(page_start + index + 1), 5.4, MUTED, False, Qt.AlignmentFlag.AlignCenter)
             c.text(QRectF((x + sum(widths_base[:3])) * sx, ry, widths[3], rh), task["name"], font_size - 2.1, INK, True, Qt.AlignmentFlag.AlignCenter)
             c.text(QRectF((x + sum(widths_base[:4])) * sx + 3 * sx, ry, widths[4] - 6 * sx, rh), task["detail"], font_size - 2.5)
-            status_x = (x + sum(widths_base[:5])) * sx
+            c.text(QRectF((x + sum(widths_base[:5])) * sx, ry, widths[5], rh), str(int(task["quantity"] or 0)), font_size - 2.6, INK, False, Qt.AlignmentFlag.AlignCenter)
+            unit_x = (x + sum(widths_base[:6])) * sx
+            c.text(QRectF(unit_x, ry, widths[6], rh), task["unit"] or "식", font_size - 2.6, INK, False, Qt.AlignmentFlag.AlignCenter)
+            status_x = (x + sum(widths_base[:7])) * sx
             fg, bg = STATUS.get(task["status"], (MUTED, MINOR_SOFT))
-            c.rect(status_x + 3 * sx, ry + 4 * sy, widths[5] - 6 * sx, rh - 8 * sy, bg, None, 7 * c.scale)
-            c.text(QRectF(status_x, ry, widths[5], rh), task["status"], font_size - 2.8, fg, True, Qt.AlignmentFlag.AlignCenter)
+            c.rect(status_x + 3 * sx, ry + 4 * sy, widths[7] - 6 * sx, rh - 8 * sy, bg, None, 7 * c.scale)
+            c.text(QRectF(status_x, ry, widths[7], rh), task["status"], font_size - 2.8, fg, True, Qt.AlignmentFlag.AlignCenter)
             top = [_short_date(task["planned_start"]), _short_date(task["due_date"]), task["pm_assignee_name"] or "미지정"]
             bottom = [task["vendor_name"] or "미지정", task["assignee_name"] or "미지정", task["assignee_phone"] or ""]
-            for offset, (top_value, bottom_value) in enumerate(zip(top, bottom), start=6):
+            for offset, (top_value, bottom_value) in enumerate(zip(top, bottom), start=8):
                 cell_x = (x + sum(widths_base[:offset])) * sx
                 c.line(cell_x + 2 * sx, ry + rh / 2, cell_x + widths[offset] - 2 * sx, ry + rh / 2)
                 c.text(QRectF(cell_x, ry, widths[offset], rh / 2), top_value, font_size - 3.3, INK, False, Qt.AlignmentFlag.AlignCenter)

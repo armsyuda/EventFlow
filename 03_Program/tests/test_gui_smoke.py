@@ -285,18 +285,21 @@ def test_settings_contacts_refresh_checklist_choices_and_vendor_precedes_assigne
     window.settings.contacts_changed.emit()
     QTest.qWait(100)
 
+    assert window.events.table.columnCount() == 14
     assert window.events.table.horizontalHeaderItem(4).text() == "세부내용"
-    assert window.events.table.horizontalHeaderItem(8).text() == "담당자(PM)"
-    assert window.events.table.horizontalHeaderItem(9).text() == "업체"
-    assert window.events.table.horizontalHeaderItem(10).text() == "업체담당자"
-    assert window.events.table.horizontalHeaderItem(11).text() == "업체담당자 전화번호"
+    assert window.events.table.horizontalHeaderItem(5).text() == "수량"
+    assert window.events.table.horizontalHeaderItem(6).text() == "단위"
+    assert window.events.table.horizontalHeaderItem(10).text() == "담당자(PM)"
+    assert window.events.table.horizontalHeaderItem(11).text() == "업체"
+    assert window.events.table.horizontalHeaderItem(12).text() == "업체담당자"
+    assert window.events.table.horizontalHeaderItem(13).text() == "업체담당자 전화번호"
     assert {first_vendor, second_vendor} <= {row["id"] for row in window.events._vendors}
     assert {first_person, second_person} <= {row["id"] for row in window.events._all_assignees}
     labels = {window.events._assignee_label(row) for row in window.events._all_assignees if row["name"] == "같은 이름"}
     assert labels == {"같은 이름 · 실장 · 무대 운영", "같은 이름 · 팀장 · 영상 관리"}
 
-    window.events._open_cell_editor(0, 9)
-    editor = window.events.table.cellWidget(0, 9)
+    window.events._open_cell_editor(0, 11)
+    editor = window.events.table.cellWidget(0, 11)
     assert editor.findData(first_vendor) >= 0 and editor.findData(second_vendor) >= 0
     window.events.table.close_cell_editor()
     window.close(); db.close()
@@ -374,8 +377,8 @@ def test_checklist_vendor_and_pm_filters_show_only_matching_tasks(tmp_path):
     assert page.table.rowCount() == 2
     page.pm_filter.setCurrentIndex(page.pm_filter.findData(pm_b)); app.processEvents()
     assert page.table.rowCount() == 1
-    assert page.table.item(0, 8).text() == "박 PM"
-    assert page.table.item(0, 9).text() == "나 실행사"
+    assert page.table.item(0, 10).text() == "박 PM"
+    assert page.table.item(0, 11).text() == "나 실행사"
     page.close(); db.close()
 
 
@@ -558,23 +561,23 @@ def test_pm_and_vendor_contacts_are_filtered_and_phone_is_shown(tmp_path):
     )
     page = EventsPage(service, db); page.set_event(event_id)
 
-    page._open_cell_editor(0, 8)
-    pm_editor = page.table.cellWidget(0, 8)
+    page._open_cell_editor(0, 10)
+    pm_editor = page.table.cellWidget(0, 10)
     assert pm_editor.findData(pm_person) >= 0
     assert pm_editor.findData(work_person) < 0 and pm_editor.findData(other_person) < 0
     page.table.close_cell_editor()
 
     vendor_choices = [("미지정", None)] + [(row["name"], row["id"]) for row in page._vendors]
     page._commit_vendor(0, page._current_tasks[0], work_vendor, vendor_choices)
-    page._open_cell_editor(0, 10)
-    contact_editor = page.table.cellWidget(0, 10)
+    page._open_cell_editor(0, 12)
+    contact_editor = page.table.cellWidget(0, 12)
     assert contact_editor.findData(work_person) >= 0
     assert contact_editor.findData(pm_person) < 0 and contact_editor.findData(other_person) < 0
     page.table.close_cell_editor()
     contact_choices = [("미지정", None)] + [(page._assignee_label(row), row["id"])
                                              for row in page._assignees_by_vendor[work_vendor]]
     page._commit_vendor_contact(0, page._current_tasks[0], work_person, contact_choices)
-    assert page.table.item(0, 11).text() == "010-3333-4444"
+    assert page.table.item(0, 13).text() == "010-3333-4444"
     page.close(); db.close()
 
 
@@ -672,17 +675,17 @@ def test_master_has_no_dday_columns_and_settlement_uses_all_registered_vendors(t
     assert "일정 기준" not in headers and "시작 D±" not in headers and "마감 D±" not in headers
     checklist = EventsPage(service, db); checklist.set_event(event_id)
     assert checklist.table.item(0, 4).text() == db.one("SELECT detail FROM master_items WHERE id=?", (master["id"],))["detail"]
-    assert checklist.table.item(0, 6).text() == "미입력"
-    assert checklist.table.item(0, 7).text() == "미입력"
-    checklist._open_cell_editor(0, 6)
-    assert checklist.table.cellWidget(0, 6) is None
+    assert checklist.table.item(0, 8).text() == "미입력"
+    assert checklist.table.item(0, 9).text() == "미입력"
+    checklist._open_cell_editor(0, 8)
+    assert checklist.table.cellWidget(0, 8) is None
     assert checklist.table._date_popup is not None
     assert "날짜 비우기" in {button.text() for button in checklist.table._date_popup.findChildren(QPushButton)}
     checklist.table.close_cell_editor()
-    assert checklist._commit_date(0, checklist._current_tasks[0], 6, "planned_start", "2026-08-20") is None
-    assert checklist.table.item(0, 6).text() == "2026-08-20"
-    assert checklist._commit_date(0, checklist._current_tasks[0], 6, "planned_start", None) is None
-    assert checklist.table.item(0, 6).text() == "미입력"
+    assert checklist._commit_date(0, checklist._current_tasks[0], 8, "planned_start", "2026-08-20") is None
+    assert checklist.table.item(0, 8).text() == "2026-08-20"
+    assert checklist._commit_date(0, checklist._current_tasks[0], 8, "planned_start", None) is None
+    assert checklist.table.item(0, 8).text() == "미입력"
 
     new_vendor = db.execute("INSERT INTO contacts(kind,name) VALUES ('VENDOR','정산 즉시 업체')").lastrowid
     settlement = SettlementPage(service, db); settlement.set_event(event_id)
@@ -716,15 +719,15 @@ def test_checklist_status_choice_updates_database_and_keeps_order_number(tmp_pat
     page = EventsPage(service, db); page.set_event(event_id)
     assert isinstance(page._current_tasks[0], dict)
     task_id = int(page._current_tasks[0]["id"])
-    page._open_cell_editor(0, 5)
-    editor = page.table.cellWidget(0, 5)
+    page._open_cell_editor(0, 7)
+    editor = page.table.cellWidget(0, 7)
     target = STATUSES.index("완료")
     editor.setCurrentIndex(target); editor.activated.emit(target); app.processEvents()
     assert db.one("SELECT status FROM event_tasks WHERE id=?", (task_id,))["status"] == "완료"
-    assert page.table.item(0, 5).text() == "완료"
+    assert page.table.item(0, 7).text() == "완료"
     assert page.table.item(0, 0).text() == "1"
     assert not (page.table.item(0, 0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
-    assert page.table.cellWidget(0, 5) is None
+    assert page.table.cellWidget(0, 7) is None
     del editor
     page.close(); db.close()
 
@@ -747,7 +750,7 @@ def test_checklist_order_column_stays_fixed_when_columns_fit(tmp_path):
     page = EventsPage(service, db); page.set_event(event_id); page.resize(1600, 800); page.show(); app.processEvents()
     before = page.table.columnWidth(0)
     fit_table_to_view(page.table)
-    assert before == 52 == page.table.columnWidth(0)
+    assert before == 48 == page.table.columnWidth(0)
     assert page.table.horizontalHeader().sectionResizeMode(0) == page.table.horizontalHeader().ResizeMode.Fixed
     assert [page.table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
     page.close(); db.close()
@@ -966,20 +969,20 @@ def test_dismissed_dropdown_closes_without_committing_and_single_click_only_sele
     page = EventsPage(service, db); page.set_event(event_id); page.resize(1500, 700); page.show()
     app.processEvents()
 
-    status_rect = page.table.visualRect(page.table.model().index(0, 5))
+    status_rect = page.table.visualRect(page.table.model().index(0, 7))
     QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=status_rect.center())
     app.processEvents()
-    assert page.table.currentRow() == 0 and page.table.currentColumn() == 5
-    assert page.table.cellWidget(0, 5) is None
+    assert page.table.currentRow() == 0 and page.table.currentColumn() == 7
+    assert page.table.cellWidget(0, 7) is None
 
     QTest.mouseDClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=status_rect.center())
     app.processEvents()
-    editor = page.table.cellWidget(0, 5)
+    editor = page.table.cellWidget(0, 7)
     assert isinstance(editor, AppComboBox)
     original = page._current_tasks[0]["status"]
     page.table.setCurrentCell(0, 4)
     app.processEvents()
-    assert page.table.cellWidget(0, 5) is None
+    assert page.table.cellWidget(0, 7) is None
     assert page._current_tasks[0]["status"] == original
     assert db.one("SELECT status FROM event_tasks WHERE event_id=?", (event_id,))["status"] == original
 
@@ -1067,7 +1070,9 @@ def test_all_spreadsheet_headers_show_column_resize_guides(tmp_path):
         header = table.horizontalHeader()
         assert header.property("columnResizeGuides") is True
         assert "세로선" in header.toolTip() and "열 너비" in header.toolTip()
-        assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    # 체크리스트/정산은 내용 최소 너비 + 세부내용·메모 Stretch 정책이라 열 1이 Interactive가 아니다.
+    for table in tables[2:]:
+        assert table.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
     assert 'QHeaderView[columnResizeGuides="true"]::section:horizontal' in app.styleSheet()
     assert "border-right: 1px solid #C9CDD3" in app.styleSheet()
     for page in pages:
@@ -1105,9 +1110,11 @@ def test_spreadsheet_pages_share_editor_table_contract(tmp_path):
     assert settlement.table.rowSpan(0, 0) > 1
     assert settlement.table.rowSpan(0, 1) > 1
     assert pages[0].table.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignHCenter
-    assert pages[0].table.columnCount() == 12
+    assert pages[0].table.columnCount() == 14
     assert pages[0].table.horizontalHeaderItem(4).text() == "세부내용"
-    assert pages[0].table.horizontalHeaderItem(11).text() == "업체담당자 전화번호"
+    assert pages[0].table.horizontalHeaderItem(5).text() == "수량"
+    assert pages[0].table.horizontalHeaderItem(6).text() == "단위"
+    assert pages[0].table.horizontalHeaderItem(13).text() == "업체담당자 전화번호"
     assert pages[1].table.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignHCenter
     assert pages[1].table.item(0, 7).textAlignment() & Qt.AlignmentFlag.AlignRight
     assert pages[2].table.item(0, 2).textAlignment() & Qt.AlignmentFlag.AlignHCenter

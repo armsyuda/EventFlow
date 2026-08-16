@@ -93,7 +93,8 @@ class SettlementPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        configure_editable_table(self.table, [90, 110, 180, 90, 80, 130, 130, 105, 110, 130, 150, 220], grouped=True, anchor_column=0)
+        configure_editable_table(self.table, [90, 110, 180, 90, 80, 130, 130, 105, 110, 130, 150, 270], grouped=True, anchor_column=0)
+        self.table.set_left_columns({11})  # 메모는 좌측 정렬
         self.table.cellDoubleClicked.connect(self._open_cell_editor)
         root.addWidget(self.table, 1)
 

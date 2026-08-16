@@ -228,7 +228,8 @@ def test_landscape_checklist_header_has_order_and_fills_the_full_table_width():
     headers, widths = _checklist_standard_columns(789.5)
     assert headers[:3] == ["순서", "대분류", "중분류"]
     assert headers[-1] == "전화번호"
-    assert len(headers) == len(widths) == 12
+    assert "수량" in headers and "단위" in headers
+    assert len(headers) == len(widths) == 14
     assert widths[0] == 24
     assert abs(sum(widths) - 789.5) < 1e-9
 

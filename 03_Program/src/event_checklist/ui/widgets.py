@@ -215,6 +215,7 @@ class FastEditableTable(QTableWidget):
         self._date_popup: QFrame | None = None
         self._group_spans: list[tuple[int, int]] = []
         self._money_columns: set[int] = set()
+        self._left_columns: set[int] = set()
         self._fixed_column_widths: dict[int, int] = {}
         self.currentCellChanged.connect(self._close_editor_after_cell_change)
 
@@ -252,8 +253,21 @@ class FastEditableTable(QTableWidget):
                 if item is not None:
                     self._apply_item_alignment(item, column)
 
+    def set_left_columns(self, columns) -> None:
+        """지정 열(세부내용·메모 등)의 셀 텍스트를 좌측 정렬로 고정한다."""
+        self._left_columns = {int(column) for column in columns}
+        for row in range(self.rowCount()):
+            for column in range(self.columnCount()):
+                item = self.item(row, column)
+                if item is not None and column in self._left_columns:
+                    self._apply_item_alignment(item, column)
+
     def _apply_item_alignment(self, item, column: int) -> None:
-        horizontal = Qt.AlignmentFlag.AlignRight if column in self._money_columns else Qt.AlignmentFlag.AlignHCenter
+        horizontal = Qt.AlignmentFlag.AlignHCenter
+        if column in self._money_columns:
+            horizontal = Qt.AlignmentFlag.AlignRight
+        elif column in self._left_columns:
+            horizontal = Qt.AlignmentFlag.AlignLeft
         item.setTextAlignment(horizontal | Qt.AlignmentFlag.AlignVCenter)
 
     def setItem(self, row: int, column: int, item) -> None:
@@ -843,7 +857,12 @@ def configure_editable_table(
 
 
 def fit_table_to_view(table: QTableWidget, minimum: int = 58) -> None:
-    """현재 창 너비에 맞춰 표시 중인 모든 열을 비례 조정한다."""
+    """현재 창 너비에 맞춰 표시 중인 모든 열을 비례 조정한다.
+
+    각 열의 현재 너비 비율을 유지한 채 viewport 폭에 맞춰 전체를 균등히
+    늘린다. 세부내용/메모 열을 상대적으로 넓게 유지하려면 초기 너비를
+    기준 열(항목) 대비 약 3배로 지정해 두면 된다.
+    """
     visible = [column for column in range(table.columnCount()) if not table.isColumnHidden(column)]
     if not visible:
         return

@@ -122,9 +122,9 @@ class EventsPage(QWidget):
             widget.setProperty("checklistCompact", True)
         root.addLayout(actions)
 
-        self.table = FastEditableTable(0, 12)
+        self.table = FastEditableTable(0, 14)
         self.table.setHorizontalHeaderLabels([
-            "순서", "대분류", "중분류", "항목", "세부내용", "상태", "작업 시작일", "마감일",
+            "순서", "대분류", "중분류", "항목", "세부내용", "수량", "단위", "상태", "작업 시작일", "마감일",
             "담당자(PM)", "업체", "업체담당자", "업체담당자 전화번호",
         ])
         self.table.verticalHeader().setVisible(False)
@@ -132,9 +132,10 @@ class EventsPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         configure_editable_table(
-            self.table, [52, 92, 116, 190, 260, 112, 125, 125, 155, 145, 165, 150], grouped=True
+            self.table, [48, 92, 116, 190, 570, 64, 72, 112, 125, 125, 155, 145, 165, 150], grouped=True
         )
-        self.table.set_fixed_columns({0: 52})
+        self.table.set_fixed_columns({0: 48})
+        self.table.set_left_columns({4})  # 세부내용은 좌측 정렬
         self.table.cellDoubleClicked.connect(self._open_cell_editor)
         root.addWidget(self.table, 1)
 
@@ -326,18 +327,29 @@ class EventsPage(QWidget):
             detail.setFlags(detail.flags() & ~Qt.ItemFlag.ItemIsEditable)
             detail.setToolTip(task["detail"] or "세부내용 없음")
             self.table.setItem(row_index, 4, detail)
+            quantity = QTableWidgetItem(str(int(task["quantity"] or 0)))
+            quantity.setData(Qt.ItemDataRole.UserRole, task_id)
+            quantity.setData(int(Qt.ItemDataRole.UserRole) + 1, task["quantity"])
+            quantity.setFlags(quantity.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            quantity.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row_index, 5, quantity)
+            unit = QTableWidgetItem(task["unit"] or "식")
+            unit.setData(Qt.ItemDataRole.UserRole, task_id)
+            unit.setData(int(Qt.ItemDataRole.UserRole) + 1, task["unit"] or "식")
+            unit.setFlags(unit.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row_index, 6, unit)
             status = QTableWidgetItem(task["status"]); status.setData(Qt.ItemDataRole.UserRole, task_id)
             status.setFlags(status.flags() & ~Qt.ItemFlag.ItemIsEditable); self._style_status_item(status, task["status"])
-            self.table.setItem(row_index, 5, status)
+            self.table.setItem(row_index, 7, status)
             assignee_name = next(
                 (self._assignee_label(x) for x in all_assignees if x["id"] == task["assignee_id"]),
                 "미지정",
             )
             pm_name = next((x["name"] for x in pm_assignees if x["id"] == task["pm_assignee_id"]), "미지정")
             for column, text, data in [
-                (6, task["planned_start"] or "미입력", task["planned_start"]),
-                (7, task["due_date"] or "미입력", task["due_date"]),
-                (8, pm_name, task["pm_assignee_id"]),
+                (8, task["planned_start"] or "미입력", task["planned_start"]),
+                (9, task["due_date"] or "미입력", task["due_date"]),
+                (10, pm_name, task["pm_assignee_id"]),
             ]:
                 cell = QTableWidgetItem(text); cell.setData(Qt.ItemDataRole.UserRole, task_id)
                 cell.setData(int(Qt.ItemDataRole.UserRole) + 1, data); cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -346,13 +358,13 @@ class EventsPage(QWidget):
             vendor.setData(Qt.ItemDataRole.UserRole, task_id)
             vendor.setData(int(Qt.ItemDataRole.UserRole) + 1, task["vendor_id"])
             vendor.setFlags(vendor.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row_index, 9, vendor)
+            self.table.setItem(row_index, 11, vendor)
             contact = QTableWidgetItem(assignee_name); contact.setData(Qt.ItemDataRole.UserRole, task_id)
             contact.setData(int(Qt.ItemDataRole.UserRole) + 1, task["assignee_id"])
-            contact.setFlags(contact.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(row_index, 10, contact)
+            contact.setFlags(contact.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(row_index, 12, contact)
             phone = QTableWidgetItem(task["assignee_phone"] or "")
             phone.setData(Qt.ItemDataRole.UserRole, task_id); phone.setFlags(phone.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row_index, 11, phone)
+            self.table.setItem(row_index, 13, phone)
             self.table.setRowHeight(row_index, 48)
         self.table.apply_category_spans(1, 2)
         self.summary.setText(f"{len(tasks)}개 항목" + (" · 제외 기록" if self.removed_toggle.isChecked() else ""))
@@ -424,12 +436,11 @@ class EventsPage(QWidget):
         return person_display_label(person)
 
     def _open_cell_editor(self, row: int, column: int) -> None:
-        if self.loading or column not in {3, 4, 5, 6, 7, 8, 9, 10}:
+        if self.loading or column not in {3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
             return
         task = self._task_for_row(row)
         if not task or task["is_removed"]:
             return
-        task_id = int(task["id"])
         if column in {3, 4}:
             field = "name" if column == 3 else "detail"
             self.table.open_text_editor(
@@ -437,26 +448,50 @@ class EventsPage(QWidget):
                 lambda value: self._commit_text(row, task, column, field, value),
             )
         elif column == 5:
+            self.table.open_number_editor(row, column, task["quantity"],
+                                          lambda value: self._commit_quantity(row, task, value))
+        elif column == 6:
+            choices = [(unit, unit) for unit in load_master_choice_catalog(self.db).units]
+            self.table.open_choice_editor(row, column, choices, task["unit"] or "식",
+                                          lambda value: self._commit_unit(row, task, value), editable=True)
+        elif column == 7:
             choices = [(status, status) for status in STATUSES]
             self.table.open_choice_editor(row, column, choices, task["status"],
                                           lambda value: self._commit_status(row, task, value))
-        elif column in {6, 7}:
-            field = "planned_start" if column == 6 else "due_date"
+        elif column in {8, 9}:
+            field = "planned_start" if column == 8 else "due_date"
             self.table.open_date_editor(row, column, task[field],
                                         lambda value: self._commit_date(row, task, column, field, value))
-        elif column == 8:
+        elif column == 10:
             choices = [("미지정", None)] + [(x["name"], x["id"]) for x in self._pm_assignees]
             self.table.open_choice_editor(row, column, choices, task["pm_assignee_id"],
                                           lambda value: self._commit_simple(row, task, column, "pm_assignee_id", value, choices))
-        elif column == 9:
+        elif column == 11:
             choices = [("미지정", None)] + [(x["name"], x["id"]) for x in self._vendors]
             self.table.open_choice_editor(row, column, choices, task["vendor_id"],
                                           lambda value: self._commit_vendor(row, task, value, choices))
-        elif column == 10:
+        elif column == 12:
             rows = self._assignees_by_vendor.get(int(task["vendor_id"]), []) if task["vendor_id"] else []
             choices = [("미지정", None)] + [(self._assignee_label(x), x["id"]) for x in rows]
             self.table.open_choice_editor(row, column, choices, task["assignee_id"],
                                           lambda value: self._commit_vendor_contact(row, task, value, choices))
+
+    def _commit_quantity(self, row, task, value):
+        value = int(value or 0)
+        self.service.update_task(int(task["id"]), quantity=value)
+        task["quantity"] = value
+        cell = self.table.item(row, 5)
+        cell.setText(str(value))
+        cell.setData(int(Qt.ItemDataRole.UserRole) + 1, value)
+        self.changed.emit(self.event_id or 0)
+
+    def _commit_unit(self, row, task, value):
+        self.service.update_task(int(task["id"]), unit=value or "식")
+        task["unit"] = value or "식"
+        cell = self.table.item(row, 6)
+        cell.setText(task["unit"])
+        cell.setData(int(Qt.ItemDataRole.UserRole) + 1, task["unit"])
+        self.changed.emit(self.event_id or 0)
 
     def _commit_text(self, row, task, column, field, value):
         if field == "name" and not value:
@@ -479,7 +514,7 @@ class EventsPage(QWidget):
 
     def _commit_status(self, row, task, value):
         self.service.update_task(int(task["id"]), status=value); task["status"] = value
-        cell = self.table.item(row, 5); cell.setText(value); self._style_status_item(cell, value)
+        cell = self.table.item(row, 7); cell.setText(value); self._style_status_item(cell, value)
         self.changed.emit(self.event_id or 0)
 
     def _commit_date(self, row, task, column, field, value):
@@ -492,10 +527,10 @@ class EventsPage(QWidget):
         self.changed.emit(self.event_id or 0)
 
     def _commit_vendor_contact(self, row, task, value, choices):
-        self._commit_simple(row, task, 10, "assignee_id", value, choices)
+        self._commit_simple(row, task, 12, "assignee_id", value, choices)
         person = next((x for x in self._all_assignees if x["id"] == value), None)
         task["assignee_phone"] = person["phone"] if person else ""
-        self.table.item(row, 11).setText(task["assignee_phone"] or "")
+        self.table.item(row, 13).setText(task["assignee_phone"] or "")
 
     def _commit_vendor(self, row, task, vendor_id, choices):
         task_id = int(task["id"]); assignee_id = task["assignee_id"]
@@ -506,9 +541,9 @@ class EventsPage(QWidget):
             if int(assignee_id) not in allowed:
                 QMessageBox.information(self, "담당자 변경 안내", "새 업체 소속과 맞지 않는 기존 담당자를 미지정으로 전환합니다.")
                 fields["assignee_id"] = None; task["assignee_id"] = None
-                task["assignee_phone"] = ""; self.table.item(row, 10).setText("미지정"); self.table.item(row, 11).setText("")
+                task["assignee_phone"] = ""; self.table.item(row, 12).setText("미지정"); self.table.item(row, 13).setText("")
         self.service.update_task(task_id, **fields); task["vendor_id"] = vendor_id
-        cell = self.table.item(row, 9); cell.setText(next((x for x, data in choices if data == vendor_id), "미지정"))
+        cell = self.table.item(row, 11); cell.setText(next((x for x, data in choices if data == vendor_id), "미지정"))
         cell.setData(int(Qt.ItemDataRole.UserRole) + 1, vendor_id); self.changed.emit(self.event_id or 0)
 
     def _update(self, task_id, **values):
