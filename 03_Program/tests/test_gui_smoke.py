@@ -1496,6 +1496,15 @@ def test_category_cell_widgets_enable_rename_and_group_move(tmp_path):
     ]
     assert cl_cells, "체크리스트에 분류 위젯이 배치되어야 한다."
 
+    # 중분류 CategoryCell 은 중분류 이름만, 대분류 CategoryCell 은 대분류 이름만 표시한다.
+    for r, c in cl_cells:
+        cell = checklist.table.cellWidget(r, c)
+        if isinstance(cell, CategoryCell):
+            if cell._major_only:
+                assert cell.label.text() == cell.major, "대분류 셀은 대분류 이름만 보여야 한다."
+            else:
+                assert cell.label.text() == cell.minor, "중분류 셀은 중분류 이름만 보여야 한다."
+
     # 콜백으로 직접 이름 변경 요청을 해보면 (QInputDialog 는 monkeypatch 하지 않고
     # 서비스 메서드 호출 경로로만 확인) rename_category 가 동작한다.
     tasks = service.list_tasks(event_id)

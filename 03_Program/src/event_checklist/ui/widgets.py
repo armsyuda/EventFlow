@@ -597,6 +597,72 @@ class FastEditableTable(QTableWidget):
         self.open_cell_editor(row, column, editor)
         editor.selectAll()
 
+    def enable_major_float(self, major_column: int) -> None:
+        """대분류가 화면(뷰포트) 위쪽으로 벗어나 보이지 않게 될 때,
+        이름이 항상 보이도록 뷰포트 상단에 대분류를 고정 표시한다."""
+        self._major_column = major_column
+        if getattr(self, "_major_float", None) is None:
+            self._major_float = QLabel(self.viewport())
+            self._major_float.setObjectName("MajorFloatLabel")
+            self._major_float.setStyleSheet(
+                "QLabel#MajorFloatLabel{background:#6B7280; color:#FFFFFF; padding:4px 12px; "
+                "border-radius:6px; font-weight:600; font-size:13px;}"
+            )
+            self._major_float.hide()
+        self.verticalScrollBar().valueChanged.connect(lambda _: self._update_major_float())
+        # 스크롤·뷰포트 크기 변화와 함께 즉시 갱신
+        self._update_major_float()
+
+    def _update_major_float(self) -> None:
+        label = getattr(self, "_major_float", None)
+        if label is None:
+            return
+        major_col = getattr(self, "_major_column", None)
+        if major_col is None or self.rowCount() == 0:
+            label.hide()
+            return
+        vp = self.viewport()
+        top = vp.rect().top()
+        # 뷰포트 상단에 걸치는 행
+        index = self.indexAt(QPoint(vp.rect().left() + 2, top + 1))
+        if not index.isValid():
+            label.hide()
+            return
+        row = index.row()
+        item = self.item(row, major_col)
+        if item is None:
+            label.hide()
+            return
+        major = item.data(GROUP_MAJOR_ROLE)
+        if major is None:
+            label.hide()
+            return
+        group_major = str(major)
+        # 대분류 그룹의 시작 행 rect
+        group_row = row
+        while group_row > 0:
+            above = self.item(group_row - 1, major_col)
+            if above is None or above.data(GROUP_MAJOR_ROLE) != major:
+                break
+            group_row -= 1
+        start_rect = self.visualRect(self.model().index(group_row, major_col))
+        # 대분류 시작 지점이 뷰포트 상단보다 위로 벗어나면 고정 표시
+        if start_rect.top() < vp.rect().top():
+            label.setText(group_major)
+            label.adjustSize()
+            # 대분류 열의 가로 중앙에 배치한다.
+            col_rect = self.visualRect(self.model().index(row, major_col))
+            label_x = col_rect.center().x() - label.width() // 2
+            label.move(max(vp.rect().left() + 2, label_x), vp.rect().top() + 6)
+            label.raise_()
+            label.show()
+        else:
+            label.hide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_major_float()
+
     def enable_row_drag(self, on_reorder) -> None:
         """행 드래그 드롭으로 순서를 바꿀 수 있게 한다.
 
@@ -1029,15 +1095,29 @@ class CategoryCell(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 3)
         layout.setSpacing(0)
-        self.label = QLabel(str(major if minor is None else f"{major} > {minor}"))
+        # 중분류(minor) 셀에는 중분류 이름만, 대분류(minor None) 셀에는 대분류 이름만 표시한다.
+        self.label = QLabel(str(minor if minor is not None else major))
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label.setStyleSheet("background:transparent; font-weight:500;")
-        layout.addWidget(self.label, 1)
-        self.handle = QLabel("\u22ee")
+        # 대분류는 병합 영역이 세로로 길어 화면 밖으로 벗어나 이름이 가려지지 않도록
+        # 이름 라벨을 병합 열의 세로 중앙에 배치한다. 중분류는 위쪽에 배치.
+        if self._major_only:
+            # [위쪽 스트레치][라벨][아래쪽 스트레치(핸들 위)] — 라벨이 세로 중앙.
+            layout.addStretch(1)
+            layout.addWidget(self.label, 0)
+            layout.addStretch(1)  # 라벨과 핸들 사이 여유
+        else:
+            layout.addWidget(self.label, 1)
+        # 드래그 핸들: 크고 눈에 띄게, 드래그 가능 표시(⋮⋮ / 좌우 여백 버튼).
+        self.handle = QLabel("\u2630")  # ☰ 아이콘 — 드래그 가능을 명확히 표현
         self.handle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.handle.setFixedHeight(14)
-        self.handle.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.handle.setStyleSheet("color:#B4BAC0; border:none; background:transparent;")
+        self.handle.setFixedHeight(22)
+        self.handle.setToolTip("끌어서 분류 순서 변경 (더블클릭: 이름 변경)")
+        self.handle.setCursor(Qt.CursorShape.SizeAllCursor)
+        # 배경색 없이 아이콘(☰) 3줄만, 색상은 연하게.
+        self.handle.setStyleSheet(
+            "color:#C9CFD6; background:transparent; border:none; font-size:14px; font-weight:600;"
+        )
         layout.addWidget(self.handle, 0)
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
@@ -1059,7 +1139,13 @@ class CategoryCell(QWidget):
                 app.installEventFilter(self)
             event.accept()
         else:
-            super().mousePressEvent(event)
+            # 분류 셀의 라벨/여백 영역을 눌러도 테이블의 개별 항목 드래그가 시작되지
+            # 않도록 삼킨다 (이름 편집은 mouseDoubleClickEvent 로만, 이동은 핸들로만).
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        # 개별 항목 드래그가 분류 셀에서 시작되지 않도록 차단한다.
+        event.accept()
 
     def eventFilter(self, watched, event) -> bool:
         if self._dragging and event.type() == QEvent.Type.MouseMove:
@@ -1085,6 +1171,11 @@ class CategoryCell(QWidget):
             below = self._drop_below_center(global_pos)
             if self._major_only:
                 target = (target[0], None)  # 대분류 이동은 minor 를 버린다
+            else:
+                # 중분류 이동은 같은 대분류 안에서만 가능하다. 다른 대분류로는 옮기지 않는다
+                # (중분류는 그 소속 항목들을 따라가되, 대분류를 벗어나면 항목이 뒤섞이므로 금지).
+                if target[0] != self.major:
+                    return
             if target != (self.major, self.minor):
                 self._on_move(self.major, self.minor, target[0], target[1], not below)
 

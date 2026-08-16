@@ -450,3 +450,48 @@ def test_move_category_reorders_whole_group(db):
     positions = [i for i, t in enumerate(after) if t["major"] == majors[0]]
     second_pos = next(i for i, t in enumerate(after) if t["id"] == second_major_id)
     assert positions and positions[0] > second_pos, "첫 대분류가 두 번째 대분류보다 뒤로 이동해야 한다."
+
+
+def test_move_category_minor_reorders_within_major_keeping_membership(db):
+    """중분류 드래그는 같은 대분류 안에서 중분류 순서만 바꾸고,
+    항목의 소속(major/minor)은 그대로 유지된다."""
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 8")
+    event_id = service.create_event("중분류 이동", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+
+    # 같은 major 안에 서로 다른 minor 가 둘 이상 있는지 확인/준비.
+    minors_by_major: dict[str, set[str]] = {}
+    for t in tasks:
+        minors_by_major.setdefault(t["major"], set()).add(t["minor"])
+    eligible = [(m, list(ms)) for m, ms in minors_by_major.items() if len(ms) >= 2]
+    if not eligible:
+        target = tasks[0]["major"]
+        eid = event_id
+        for mn in ("기존A", "기존B"):
+            db.execute(
+                "INSERT INTO event_tasks(event_id,major,minor,name,status,sort_order) VALUES (?,?,?,?,?,?)",
+                (eid, target, mn, "항목", "미착수", 20000),
+            )
+        tasks = service.list_tasks(event_id)
+        minors_by_major = {}
+        for t in tasks:
+            minors_by_major.setdefault(t["major"], set()).add(t["minor"])
+        eligible = [(m, list(ms)) for m, ms in minors_by_major.items() if len(ms) >= 2]
+
+    major, minors = eligible[0]
+    a, b = minors[0], minors[1]
+    # 이동 전 각 중분류 소속 항목들의 (major,minor) 고정 확인
+    snapshot_before = {t["id"]: (t["major"], t["minor"]) for t in tasks}
+
+    # b 중분류를 a 앞으로 이동
+    service.move_category(event_id, major=major, minor=b, target_major=major, target_minor=a, before=True)
+    after = service.list_tasks(event_id)
+    a_pos = [i for i, t in enumerate(after) if t["major"] == major and t["minor"] == a]
+    b_pos = [i for i, t in enumerate(after) if t["major"] == major and t["minor"] == b]
+    assert a_pos and b_pos
+    assert b_pos[0] < a_pos[0], "b 중분류가 a 중분류보다 앞으로 이동해야 한다."
+
+    # 항목 소속은 전혀 변하지 않아야 한다.
+    after_map = {t["id"]: (t["major"], t["minor"]) for t in after}
+    assert after_map == snapshot_before, "중분류 이동은 항목의 major/minor 를 바꾸면 안 된다."

@@ -151,6 +151,7 @@ class EventsPage(QWidget):
         self.table.set_left_columns({4})  # 세부내용은 좌측 정렬
         self.table.cellDoubleClicked.connect(self._open_cell_editor)
         self.table.enable_row_drag(self._handle_row_drag)
+        self.table.enable_major_float(1)  # 대분류가 화면 밖으로 벗어나도 이름을 상단에 고정 표시
         root.addWidget(self.table, 1)
 
     def set_event(self, event_id: int | None, *, force: bool = False):
@@ -403,6 +404,7 @@ class EventsPage(QWidget):
         self.table.apply_category_spans(1, 2)
         from .widgets import install_category_cell_widgets
         install_category_cell_widgets(self.table, 1, 2, self._edit_category_name, self._move_category)
+        self.table._update_major_float()
         self.summary.setText(f"{len(tasks)}개 항목" + (" · 제외 기록" if self.removed_toggle.isChecked() else ""))
         self.loading = False
         self.table.blockSignals(False)
