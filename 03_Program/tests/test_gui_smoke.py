@@ -1527,7 +1527,7 @@ def test_category_cell_widgets_enable_rename_and_group_move(tmp_path):
         second_pos = next(i for i, t in enumerate(after_move) if t["id"] == second_major_id)
         assert first_pos and first_pos[0] > second_pos, "대분류가 목표 대분류 뒤로 이동해야 한다."
 
-    # 정산에도 CategoryCell 이 배치된다 (소계 행 제외).
+        # 정산에도 CategoryCell 이 배치된다 (소계 행 제외).
     settlement.refresh()
     st_cells = [
         isinstance(settlement.table.cellWidget(r, c), CategoryCell)
@@ -1538,4 +1538,34 @@ def test_category_cell_widgets_enable_rename_and_group_move(tmp_path):
     for page in (checklist, settlement):
         page.close()
     db.close()
+
+
+def test_checklist_zebra_stripes_reset_per_minor_group(tmp_path):
+    """체크리스트 줄무늬가 중분류 그룹이 시작될 때마다 흰색부터 다시 시작해,
+    이동 후에도 그룹이 시각적으로 유지되어야 한다."""
+    from event_checklist.ui.events_page import EventsPage
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "zebra.db")
+    service = EventService(db)
+    master_ids = [row["id"] for row in db.query("SELECT id FROM master_items ORDER BY sort_order")]
+    eid = service.create_event("zebra", date.today(), date.today() + timedelta(days=3), master_ids)
+    page = EventsPage(service, db)
+    page.set_event(eid)
+    page.resize(1200, 700); page.show(); app.processEvents()
+
+    t = page.table
+    assert t.rowCount() >= 2
+    prev_minor = None
+    for r in range(t.rowCount()):
+        it = t.item(r, 2)
+        minor = it.data(GROUP_MINOR_ROLE) if it else None
+        if minor is None:
+            continue
+        if minor != prev_minor:
+            # 새 중분류 그룹 시작 → 첫 행은 흰색이어야 한다.
+            cell = t.item(r, 0)
+            bg = cell.background().color().name() if cell and cell.background().color().isValid() else None
+            assert bg == "#ffffff", f"그룹 시작 행(row {r}, {minor})은 흰색이어야 한다. (got {bg})"
+            prev_minor = minor
+    page.close()
 

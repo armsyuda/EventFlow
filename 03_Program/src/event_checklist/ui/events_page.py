@@ -141,7 +141,7 @@ class EventsPage(QWidget):
             "담당자(PM)", "업체", "업체담당자", "업체담당자 전화번호",
         ])
         self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)  # zebra 는 _apply_row_zebra 로 명시 제어
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         configure_editable_table(
@@ -402,6 +402,7 @@ class EventsPage(QWidget):
             self.table.setItem(row_index, 13, phone)
             self.table.setRowHeight(row_index, 48)
         self.table.apply_category_spans(1, 2)
+        self._apply_zebra_stripes()
         from .widgets import install_category_cell_widgets
         install_category_cell_widgets(self.table, 1, 2, self._edit_category_name, self._move_category)
         self.table._update_major_float()
@@ -467,6 +468,40 @@ class EventsPage(QWidget):
         fg, bg = status_color(status)
         item.setForeground(QColor(fg)); item.setBackground(QColor(bg))
         font = item.font(); font.setBold(True); item.setFont(font)
+
+    ZEBRA_EVEN = QColor("#FFFFFF")
+    ZEBRA_ODD = QColor("#F4F6F8")
+
+    def _apply_zebra_stripes(self) -> None:
+        """중분류(또는 대분류) 그룹이 시작될 때마다 흰색부터 새로 줄무늬를 칠한다.
+
+        각 그룹은 흰색(첫 행)에서 시작해 내부에서 흰색/연한회색이 교대되므로,
+        분류를 이동해도 그룹 내부의 색 패턴이 깨지지 않고(그룹 자체가 이동할 뿐),
+        새 위치에서도 흰색부터 정돈되게 보인다. 진행상태(7열) 셀은 상태 색을 유지한다.
+        """
+        total = self.table.rowCount()
+        if total == 0:
+            return
+        offset = 0
+        prev_group = None
+        for row in range(total):
+            group = None
+            item = self.table.item(row, 2)  # 중분류 열
+            if item is not None:
+                minor = item.data(GROUP_MINOR_ROLE)
+                major = item.data(GROUP_MAJOR_ROLE)
+                group = (major, minor)
+            if group != prev_group:
+                offset = 0  # 새 그룹 시작 → 흰색부터
+                prev_group = group
+            bg = self.ZEBRA_EVEN if offset % 2 == 0 else self.ZEBRA_ODD
+            for column in range(self.table.columnCount()):
+                if column == 7:
+                    continue  # 상태 색 유지
+                cell = self.table.item(row, column)
+                if cell is not None:
+                    cell.setBackground(bg)
+            offset += 1
 
     def _task_for_row(self, row: int):
         return self._current_tasks[row] if 0 <= row < len(self._current_tasks) else None

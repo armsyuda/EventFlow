@@ -495,3 +495,113 @@ def test_move_category_minor_reorders_within_major_keeping_membership(db):
     # 항목 소속은 전혀 변하지 않아야 한다.
     after_map = {t["id"]: (t["major"], t["minor"]) for t in after}
     assert after_map == snapshot_before, "중분류 이동은 항목의 major/minor 를 바꾸면 안 된다."
+
+
+def test_removed_task_sort_order_does_not_pin_category_to_front(db):
+    """제거된(is_removed) 항목의 낮은 sort_order 가 분류 정렬의 MIN 으로 잡혀
+    해당 중분류가 앞에 고정되는 버그가 없어야 한다. (실제 사용자 DB 재현)"""
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 6")
+    event_id = service.create_event("고정 버그", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+
+    # 테스트하던 대분류를 잡아 '행사'-같은 단일 대분류 group 으로 만들고, 제거된 낮은 sort 항목 추가.
+    major = tasks[0]["major"]
+    minor_a, minor_b = tasks[0]["minor"], "중분류B"
+    # 중분류B 항목이 없으면 추가
+    if not any(t["major"] == major and t["minor"] == minor_b for t in tasks):
+        db.execute(
+            "INSERT INTO event_tasks(event_id,major,minor,name,status,sort_order) VALUES (?,?,?,?,?,?)",
+            (event_id, major, minor_b, "B항목", "미착수", 100000),
+        )
+        tasks = service.list_tasks(event_id)
+
+    # 제거된(is_removed=1) 항목을 추가하는데 낮은 sort_order(1) 를 준다.
+    db.execute(
+        "INSERT INTO event_tasks(event_id,major,minor,name,status,sort_order,is_removed,removed_reason) "
+        "VALUES (?,?,?,?,?,?,1,?)",
+        (event_id, major, minor_b, "삭제된낮은sort", "미착수", 1, "테스트"),
+    )
+    # 두 중분류 그룹의 표시 순서를 확인
+    def cat_seq():
+        seq = []
+        for t in service.list_tasks(event_id):
+            if t["major"] != major:
+                continue
+            k = t["major"] + ">" + t["minor"]
+            if not seq or seq[-1] != k:
+                seq.append(k)
+        return seq
+    before = cat_seq()
+    # minor_a 와 minor_b 가 모두 앞쪽에, minor_b 다음에 minor_a 가 나오는지(아직).
+    assert any(k.endswith(">" + minor_a) for k in before), "minor_a 가 존재해야 한다."
+    # minor_b 를 minor_a 앞으로 이동한다. 제거된 항목의 sort=1 이 MIN 을 오염시키면
+    # minor_b 가 앞에 고정돼 이동이 안 된다 → 수정 후엔 이동이 된다.
+    service.move_category(event_id, major=major, minor=minor_b,
+                          target_major=major, target_minor=minor_a, before=True)
+    after = cat_seq()
+    idx_b = next(i for i, k in enumerate(after) if k.endswith(">" + minor_b))
+    idx_a = next(i for i, k in enumerate(after) if k.endswith(">" + minor_a))
+    assert idx_b < idx_a, "제거된 항목 때문에 중분류가 고정되면 안 된다. (is_removed MIN 오염)"
+
+
+def test_restore_repositions_task_to_end_of_its_minor(db):
+    """삭제된 항목을 복원하면 그 major+minor 의 맨 끝에 배치되어, 과거의 낮은
+    sort_order 가 분류를 앞으로 고정시키지 않아야 한다."""
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")
+    event_id = service.create_event("복원 정렬", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+    major = tasks[0]["major"]; minor = tasks[0]["minor"]
+    target = next(t for t in tasks if t["major"] == major and t["minor"] == minor)
+
+    # remove + restore 본 항목: 낮은 sort_order(삭제 상태)를 유지하도록 먼저 is_removed 로 만들고
+    # 다시 복원하면 맨 끝(sort가 기존 그룹 max+10)으로 배치된다.
+    db.execute("UPDATE event_tasks SET is_removed=1,removed_reason='테스트' WHERE id=?", (target["id"],))
+    service.set_task_removed([target["id"]], False)
+
+    row = service.db.one(
+        "SELECT sort_order FROM event_tasks WHERE id=?", (target["id"],)
+    )
+    # 같은 minor 그룹의 최신(max) sort 보다 커야 그룹 맨 끝 배치, 앞 고정 방지
+    # (복원된 task 자체는 제외한 그룹 max)
+    group_max = service.db.one(
+        "SELECT COALESCE(MAX(sort_order),0) m FROM event_tasks "
+        "WHERE event_id=? AND major=? AND minor=? AND is_removed=0 AND id<>?",
+        (event_id, major, minor, target["id"]),
+    )["m"]
+    assert row["sort_order"] > group_max, "복원 항목은 그 minor 의 맨 끝에 배치되어야 한다."
+
+
+def test_restore_into_empty_minor_goes_to_end_of_major(db):
+    """활성 항목이 하나도 없는(minor 가 비어있는) 중분류에 항목을 복원하면,
+    그 major 의 맨 끝에 배치되어 화면 앞으로 튀지 않아야 한다."""
+    service = EventService(db)
+    masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 6")
+    event_id = service.create_event("빈 minor 복원", date(2026, 9, 1), None, [row["id"] for row in masters])
+    tasks = service.list_tasks(event_id)
+    major = tasks[0]["major"]; minor = tasks[0]["minor"]
+
+    # 이 major 에 남은 활성 항목들을 전부 삭제해 "빈 minor" 상태를 만든다.
+    activ = [t["id"] for t in service.list_tasks(event_id) if t["major"] == major]
+    service.set_task_removed(activ, True)
+    assert service.db.one(
+        "SELECT COUNT(*) n FROM event_tasks WHERE event_id=? AND major=? AND is_removed=0",
+        (event_id, major),
+    )["n"] == 0
+
+    # 이 major 의 삭제된 항목 하나를 복원 → major 의 끝에 배치되어야 한다.
+    removed = service.db.one(
+        "SELECT id FROM event_tasks WHERE event_id=? AND major=? AND is_removed=1 LIMIT 1",
+        (event_id, major),
+    )
+    assert removed is not None, "빈 major 에는 복원할 삭제 항목이 있어야 한다."
+    service.set_task_removed([removed["id"]], False)
+
+    restored = service.db.one("SELECT sort_order FROM event_tasks WHERE id=?", (removed["id"],))
+    major_max = service.db.one(
+        "SELECT COALESCE(MAX(sort_order),0) m FROM event_tasks "
+        "WHERE event_id=? AND major=? AND is_removed=0 AND id<>?",
+        (event_id, major, removed["id"]),
+    )["m"]
+    assert restored["sort_order"] > major_max, "빈 minor 복원 항목은 major 의 끝에 배치되어야 한다."

@@ -202,9 +202,9 @@ class EventService:
         # 보존하고, 나중에 추가한 항목도 선택한 분류 안쪽에 배치한다.
         sql += """ ORDER BY
             (SELECT MIN(g.sort_order) FROM event_tasks g
-             WHERE g.event_id=t.event_id AND g.major=t.major),
+             WHERE g.event_id=t.event_id AND g.major=t.major AND g.is_removed=0),
             (SELECT MIN(g.sort_order) FROM event_tasks g
-             WHERE g.event_id=t.event_id AND g.major=t.major AND g.minor=t.minor),
+             WHERE g.event_id=t.event_id AND g.major=t.major AND g.minor=t.minor AND g.is_removed=0),
             t.sort_order, t.id"""
         return self.db.query(sql, params)
 
@@ -599,11 +599,42 @@ class EventService:
         ids = list(dict.fromkeys(int(value) for value in task_ids))
         if not ids:
             return
-        placeholders = ",".join("?" for _ in ids)
-        self.db.execute(
-            f"UPDATE event_tasks SET is_removed=?,removed_reason=? WHERE id IN ({placeholders})",
-            (1 if removed else 0, reason.strip() if removed else "", *ids),
-        )
+        placeholders = ", ".join("?" for _ in ids)
+        if not removed:
+            # 복원(removed=False): 항목을 현재 화면 위치에 맞게 재배치해, 과거의 낮은
+            # sort_order 가 분류를 앞으로 고정시키는 것을 방지한다.
+            # - 해당 major+minor 의 활성 항목이 있으면 그 minor 의 맨 끝(MAX+10)
+            # - minor 가 비어 있으면 같은 major 의 활성 항목 끝(MAX+10) → major 내 맨 뒤에 배치
+            #   (전부 비어 있으면 10)
+            rows = self.db.query(
+                f"SELECT id,event_id,major,minor FROM event_tasks WHERE id IN ({placeholders})", ids
+            )
+            with self.db.transaction() as conn:
+                for row in rows:
+                    event_id = row["event_id"]; major = row["major"]; minor = row["minor"]
+                    minor_max = conn.execute(
+                        "SELECT COALESCE(MAX(sort_order),0) FROM event_tasks "
+                        "WHERE event_id=? AND major=? AND minor=? AND is_removed=0 AND id<>?",
+                        (event_id, major, minor, row["id"]),
+                    ).fetchone()[0]
+                    base = minor_max
+                    if base == 0:
+                        # minor 가 비어 있으면 같은 major 의 끝에 배치
+                        major_max = conn.execute(
+                            "SELECT COALESCE(MAX(sort_order),0) FROM event_tasks "
+                            "WHERE event_id=? AND major=? AND is_removed=0 AND id<>?",
+                            (event_id, major, row["id"]),
+                        ).fetchone()[0]
+                        base = major_max
+                    conn.execute(
+                        "UPDATE event_tasks SET is_removed=0,removed_reason='',sort_order=? WHERE id=?",
+                        (base + 10, row["id"]),
+                    )
+        else:
+            self.db.execute(
+                f"UPDATE event_tasks SET is_removed=1,removed_reason=? WHERE id IN ({placeholders})",
+                (reason.strip(), *ids),
+            )
 
     @staticmethod
     def line_amounts(quantity, unit_price, vat_type: str) -> tuple[int, int, int]:
@@ -621,10 +652,10 @@ class EventService:
                WHERE t.event_id=? AND t.is_removed=0 AND t.status<>'해당없음'
                ORDER BY
                  (SELECT MIN(g.sort_order) FROM event_tasks g
-                  WHERE g.event_id=t.event_id AND g.major=t.major),
+                  WHERE g.event_id=t.event_id AND g.major=t.major AND g.is_removed=0),
                  CASE WHEN TRIM(t.minor)='기타' THEN 1 ELSE 0 END,
                  (SELECT MIN(g.sort_order) FROM event_tasks g
-                  WHERE g.event_id=t.event_id AND g.major=t.major AND g.minor=t.minor),
+                  WHERE g.event_id=t.event_id AND g.major=t.major AND g.minor=t.minor AND g.is_removed=0),
                  t.sort_order,t.id""",
             (event_id,),
         )

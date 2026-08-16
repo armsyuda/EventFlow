@@ -1,5 +1,33 @@
 # Codex 작업 연속성
 
+## 2026-08-16 v0.3.47 중분류 그룹별 줄무늬(zebra) 리셋
+
+- **문제**: 항목/분류를 이동하면 행 배경 흰색/연한회색 줄무늬가 어긋나 보임.
+- **수정**: 체크리스트·정산의 줄무늬를 **중분류(또는 대분류) 그룹이 시작될 때마다 흰색부터 새로 시작**하도록 변경(`_apply_zebra_stripes`). 이전엔 Qt `setAlternatingRowColors`(전역 행 인덱스) 사용 → 그룹 경계 무시. 이제 각 그룹은 흰색 첫 행 → 내부 흰색/연회색 교대라, 분류를 이동해도 그룹 내부 패턴이 유지되고 새 위치에서 흰색부터 정돈된다.
+  - events_page: `setAlternatingRowColors(False)` + `_apply_zebra_stripes()`(중분류 열=2, GROUP_MINOR_ROLE 기준). 진행상태(7열) 셀은 상태 색 유지.
+  - settlement_page: `_apply_zebra_stripes()`(중분류 열=1), 소계/합계 행은 배경 유지.
+- **검증**: 실제 DB 복사본에서 개막식을 시민가요제 뒤로 이동 후에도 각 그룹 첫 행이 흰색으로 유지됨을 probe 확인. 회귀 테스트 `test_checklist_zebra_stripes_reset_per_minor_group` 추가. 자동검사 124개 통과. 스키마 없음.
+
+## 2026-08-16 v0.3.46 빈 minor 복원 시 major 맨 끝 배치
+
+- **엣지 케이스**: 활성 항목이 하나도 없는(비어있는) 중분류에 항목을 복원하면, 기존 로직이 `MAX(sort)+10`(비면 10) 을 줘 그 중분류가 major 안 맨 앞으로 튀던 문제.
+- **수정**: `set_task_removed` 복원 시, minor 가 비어 있으면 **같은 major 의 활성 항목 끝**(major MAX+10) 에 배치해 major 안 맨 뒤에 오게 한다. minor 에 활성 항목이 있으면 그 minor 끝(기존), major 도 비어있으면 10.
+- **검증**: 실제 DB 복사본에서 연출 minor 를 비운 뒤 복원 시 sort=720(행사 major 끝)으로 배치됨을 확인. 회귀 테스트 `test_restore_into_empty_minor_goes_to_end_of_major` 추가. 자동검사 123개 통과. 스키마 없음.
+
+## 2026-08-16 v0.3.45 복원 시 항목이 다시 앞에 고정되는 문제 수정
+
+- **버그**: 삭제된(is_removed=1) 낮은 sort_order 항목을 **복원**하면, 그 항목이 그대로 낮은 sort 를 유지해 해당 중분류가 다시 앞으로 고정/맨 앞 이동하는 문제.
+- **원인**: 복원(`set_task_removed` 의 removed=False)은 `is_removed=0` 만 바꿀 뿐 sort_order 를 그대로 두어, v0.3.44 의 is_removed 정렬 필터가 복원 항목의 낮은 sort 를 다시 MIN 으로 잡았다.
+- **수정**: 복원 시 항목의 sort_order 를 **그 major+minor 의 현재(is_removed=0) 최대 sort_order + 10** 으로 재조정해 **그 중분류의 맨 끝**에 배치. 앞으로 고정되지 않고 사용자가 드래그로 순서를 조정할 수 있다.
+- **검증**: 실제 DB 복사본에서 '개막식' task 525(sort=44) 복원 후에도 개막식 위치가 앞으로 튀지 않음을 재현 확인. 회귀 테스트 `test_restore_repositions_task_to_end_of_its_minor` 추가. 자동검사 122개 통과. 스키마 없음.
+
+## 2026-08-16 v0.3.44 중분류 고정 이동 버그 수정 (is_removed MIN 오염)
+
+- **버그**: 특정 중분류(실사용 DB의 '행사>개막식', '행사>개막축하공연')가 드래그 이동이 안 되고 앞에 고정됐다.
+- **원인**: `services.list_tasks` 와 `settlement_summary` 의 ORDER BY 서브쿼리가 `MIN(sort_order)` 을 계산할 때 `is_removed=0` 조건 없이 **제거된(삭제된) task 의 낮은 sort_order 까지 포함**했다. 그 결과 제거된 task(sort=44 등) 가 해당 중분류의 최소 순서로 잡혀 그 중분류가 항상 맨 앞/고정 배치됐고, `move_category` 가 sort_order 를 재배치해도 표시 MIN 이 변하지 않아 이동이 불가능했다.
+- **수정**: 두 ORDER BY 서브쿼리에 `g.is_removed=0` 추가. 이제 제거된 항목의 sort 가 분류 정렬에 영향을 주지 않는다.
+- **검증**: 실제 사용자 DB 복사본에서 '개막식'을 목표 분류 앞/뒤로 이동이 정상 동작함을 재현 확인. 회귀 테스트 `test_removed_task_sort_order_does_not_pin_category_to_front` 추가. 자동검사 121개 통과. 스키마 없음.
+
 ## 2026-08-16 v0.3.43 드래그 핸들 배경 제거·아이콘 연하게
 
 - [드래그 핸들] `☰` 아이콘의 배경색(`rgba`)과 라운드 border 를 제거하고 투명 배경으로. 아이콘 색상도 `#C9CFD6`(더 연한 회색)으로 죽여 3줄만 은은하게 보이게.

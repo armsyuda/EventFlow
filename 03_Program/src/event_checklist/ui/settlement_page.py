@@ -166,10 +166,37 @@ class SettlementPage(QWidget):
             self._add_subtotal_row(current_major, summary["categories"][current_major])
         self._add_total_row(summary)
         self.table.apply_category_spans(0, 1)
+        self._apply_zebra_stripes()
         from .widgets import install_category_cell_widgets
         install_category_cell_widgets(self.table, 0, 1, self._edit_category_name, self._move_category)
         self.loading = False
         self.table.blockSignals(False); self.table.setUpdatesEnabled(True); self.table.viewport().update()
+
+    def _apply_zebra_stripes(self) -> None:
+        """중분류(대분류=0, 중분류=1 열) 그룹이 시작될 때마다 흰색부터 줄무늬 재시작.
+
+        항목 행만 흰색/연한회색 교대로 칠하고, 소계/합계 행은 기존 배경을 유지한다.
+        분류를 이동해도 그룹 내부 색 패턴이 유지되고 새 위치에서 흰색부터 정돈된다.
+        """
+        total = self.table.rowCount()
+        if total == 0:
+            return
+        offset = 0
+        prev_group = None
+        for row in range(total):
+            item = self.table.item(row, 1)  # 중분류 열
+            if item is None or item.data(GROUP_MINOR_ROLE) is None:
+                continue  # 소계/합계 행 등 — 배경 유지
+            group = (item.data(GROUP_MAJOR_ROLE), item.data(GROUP_MINOR_ROLE))
+            if group != prev_group:
+                offset = 0
+                prev_group = group
+            bg = QColor("#FFFFFF") if offset % 2 == 0 else QColor("#F4F6F8")
+            for column in range(self.table.columnCount()):
+                cell = self.table.item(row, column)
+                if cell is not None:
+                    cell.setBackground(bg)
+            offset += 1
 
     def _edit_category_name(self, major: str, minor: str | None) -> None:
         """분류 이름을 더블클릭으로 변경한다. (대분류 또는 중분류)"""
