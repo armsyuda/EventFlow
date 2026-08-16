@@ -28,9 +28,13 @@ class AppComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._popup_open = False
+        self._swallow_release = False  # popup을 연 직후 ghost release 1회를 무시
 
     def showPopup(self) -> None:
         self._popup_open = True
+        # 더블클릭 잔여 마우스 릴리스가 방금 연 popup을 닫지 못하도록,
+        # 다음 번째 마우스 릴리스까지 가드를 켠다.
+        self._swallow_release = True
         self.popup_open.emit()
         self._polish_popup()
         try:
@@ -39,6 +43,15 @@ class AppComboBox(QComboBox):
             self._popup_open = False
             raise
         QTimer.singleShot(0, self._polish_popup)
+
+    def event(self, event) -> bool:
+        # editable 콤보는 popup을 열 때 lineEdit으로 포커스가 옮겨가며
+        # 그 직후의 마우스 릴리스가 popup을 닫는다(셀에서의 더블클릭 잔여).
+        # 방금 연 popup을 지킨 leading release를 여기서 소모한다.
+        if event.type() == QEvent.Type.MouseButtonRelease and self._swallow_release:
+            self._swallow_release = False
+            return True
+        return super().event(event)
 
     def hidePopup(self) -> None:
         super().hidePopup()
