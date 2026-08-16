@@ -436,6 +436,8 @@ class EventsPage(QWidget):
         return person_display_label(person)
 
     def _open_cell_editor(self, row: int, column: int) -> None:
+        from ..debug_log import get_dropdown_logger as _log
+        _log().info("EventsPage._open_cell_editor row=%s col=%s (단위=6)", row, column)
         if self.loading or column not in {3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
             return
         task = self._task_for_row(row)

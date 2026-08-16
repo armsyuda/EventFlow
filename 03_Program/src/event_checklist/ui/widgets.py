@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from ..theme import TOKENS
 from ..units import COMMON_UNITS
+from ..debug_log import get_dropdown_logger as _dbg_logger
 
 
 GROUP_MAJOR_ROLE = int(Qt.ItemDataRole.UserRole) + 101
@@ -31,6 +32,7 @@ class AppComboBox(QComboBox):
         self._swallow_release = False  # popup을 연 직후 ghost release 1회를 무시
 
     def showPopup(self) -> None:
+        _dbg_logger().info("AppComboBox.showPopup items=%d editable=%s", self.count(), self.isEditable())
         self._popup_open = True
         # 더블클릭 잔여 마우스 릴리스가 방금 연 popup을 닫지 못하도록,
         # 다음 번째 마우스 릴리스까지 가드를 켠다.
@@ -41,22 +43,46 @@ class AppComboBox(QComboBox):
             super().showPopup()
         except Exception:
             self._popup_open = False
+            _dbg_logger().exception("AppComboBox.showPopup 실패")
             raise
         QTimer.singleShot(0, self._polish_popup)
 
     def event(self, event) -> bool:
-        # editable 콤보는 popup을 열 때 lineEdit으로 포커스가 옮겨가며
-        # 그 직후의 마우스 릴리스가 popup을 닫는다(셀에서의 더블클릭 잔여).
-        # 방금 연 popup을 지킨 leading release를 여기서 소모한다.
-        if event.type() == QEvent.Type.MouseButtonRelease and self._swallow_release:
+        t = event.type()
+        # 마우스 이벤트를 좌표·버튼과 함께 기록(타입을 재사용 가능하게 로그).
+        if t in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseButtonDblClick,
+        ):
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            _dbg_logger().info(
+                "AppComboBox.event %s pos=%s,%s popup_open=%s swallow=%s",
+                "PRESS" if t == QEvent.Type.MouseButtonPress else (
+                    "RELEASE" if t == QEvent.Type.MouseButtonRelease else "DBLCLICK"
+                ),
+                pos.x(), pos.y(),
+                self._popup_open, self._swallow_release,
+            )
+        if t == QEvent.Type.MouseButtonRelease and self._swallow_release:
+            _dbg_logger().info("AppComboBox 이벤트: ghost release 소비(팝업 유지)")
             self._swallow_release = False
             return True
         return super().event(event)
 
     def hidePopup(self) -> None:
+        _dbg_logger().info("AppComboBox.hidePopup popup_open=%s", self._popup_open)
         super().hidePopup()
         self._popup_open = False
         self.popup_closed.emit()
+
+    def mousePressEvent(self, event) -> None:
+        _dbg_logger().info("AppComboBox.mousePressEvent popup_open=%s", self._popup_open)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        _dbg_logger().info("AppComboBox.mouseReleaseEvent popup_open=%s", self._popup_open)
+        super().mouseReleaseEvent(event)
 
     def popup_is_open(self) -> bool:
         return self._popup_open
@@ -237,6 +263,11 @@ class FastEditableTable(QTableWidget):
     def _close_editor_after_cell_change(self, row: int, column: int, *_previous) -> None:
         if self._active_cell is not None and self._active_cell != (row, column):
             editor = self._active_editor
+            _dbg_logger().info(
+                "FastEditableTable.cellChanged active=%s->(%s,%s) editor=%s",
+                self._active_cell, row, column,
+                "combo" if isinstance(editor, QComboBox) else type(editor).__name__ if editor else "None",
+            )
             if isinstance(editor, QComboBox):
                 self.close_cell_editor()
             elif editor is not None:
@@ -340,6 +371,17 @@ class FastEditableTable(QTableWidget):
         self._active_editor = editor
         self._active_cell = (row, column)
         self.setCellWidget(row, column, editor)
+        _dbg_logger().info(
+            "FastEditableTable.open_cell_editor (%s,%s) editor=%s",
+            row, column, type(editor).__name__,
+        )
+        if isinstance(editor, AppComboBox):
+            editor.popup_open.connect(
+                lambda: _dbg_logger().info("콤보 팝업 OPEN 시그널 (row=%s,col=%s)", row, column)
+            )
+            editor.popup_closed.connect(
+                lambda: _dbg_logger().info("콤보 팝업 CLOSE 시그널 (row=%s,col=%s)", row, column)
+            )
         editor.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def close_cell_editor(self) -> None:
@@ -354,6 +396,10 @@ class FastEditableTable(QTableWidget):
         row, column = self._active_cell
         self._active_editor = None
         self._active_cell = None
+        _dbg_logger().info(
+            "FastEditableTable.close_cell_editor (%s,%s) editor=%s",
+            row, column, type(editor).__name__,
+        )
         if isinstance(editor, QComboBox):
             editor.hidePopup()
         for calendar in editor.findChildren(QCalendarWidget):
@@ -375,6 +421,10 @@ class FastEditableTable(QTableWidget):
             editor.setCurrentIndex(index)
         elif editable:
             editor.setCurrentText(str(current or ""))
+        _dbg_logger().info(
+            "open_choice_editor row=%s col=%s editable=%s items=%d current=%r",
+            row, column, editable, editor.count(), current,
+        )
 
         finished = False
         active = False  # 드롭다운이 실제로 열려 사용자 선택이 진행 중인 상태
@@ -388,6 +438,8 @@ class FastEditableTable(QTableWidget):
             if finished:
                 return
             value = editor.currentText().strip() if editable else editor.currentData()
+            _dbg_logger().info("콤보 선택(activated/apply_choice) value=%r active=%s popup_open=%s",
+                               value, active, editor.popup_is_open())
             if commit(value) is False:
                 return
             finished = True
@@ -400,6 +452,7 @@ class FastEditableTable(QTableWidget):
             # editor embedded in the old cell.  If activated() follows
             # hidePopup(), the zero-delay check sees finished=True and leaves
             # the normal commit path in control.
+            _dbg_logger().info("콤보 팝업 취소 닫힘(close_cancelled_popup)")
             QTimer.singleShot(
                 0,
                 lambda: None
@@ -415,9 +468,18 @@ class FastEditableTable(QTableWidget):
             # 아직 팝업이 안 열렸으면(showPopup 예약 전) 이를 초기화 노이즈로
             # 무시한다. popup_open 플래그가 참이 된 뒤에만 실제 선택으로 처리.
             editor.popup_open.connect(mark_active)
-            editor.lineEdit().editingFinished.connect(
-                lambda: None if not active or editor.popup_is_open() else apply_choice()
-            )
+
+            def on_editing_finished():
+                _dbg_logger().info(
+                    "editingFinished 발생 active=%s popup_open=%s -> %s",
+                    active, editor.popup_is_open(),
+                    "무시(초기화/팝업열림)" if not active or editor.popup_is_open() else "commit",
+                )
+                if not active or editor.popup_is_open():
+                    return
+                apply_choice()
+
+            editor.lineEdit().editingFinished.connect(on_editing_finished)
         self.open_cell_editor(row, column, editor)
         # Offscreen test platforms cannot safely own native popup windows after
         # the transient cell editor is removed.  The real Windows application

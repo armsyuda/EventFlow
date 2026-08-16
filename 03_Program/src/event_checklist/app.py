@@ -29,10 +29,20 @@ def main(argv=None) -> int:
     if args.data_dir:
         os.environ["EVENT_CHECKLIST_DATA_DIR"] = args.data_dir
     ensure_directories()
+
+    # 단위 콤보 드롭다운 문제 진단용 바탕화면 이벤트 로그. 앱 시작 즉시 설치.
+    from .debug_log import install_dropdown_logger, get_dropdown_logger
+    install_dropdown_logger()
+
     qt_app = QApplication(sys.argv[:1])
     qt_app.setApplicationName("이벤트 플로우")
     qt_app.setOrganizationName("EventFlow")
     qt_app.setStyle("Fusion")
+
+    # 앱이 정상 종료될 때 로그에 종료 시각을 남긴다(파일은 실시간 append라 이미 남는다).
+    qt_app.aboutToQuit.connect(
+        lambda: get_dropdown_logger().info("=== 앱 종료 ===")
+    )
 
     # A package started outside the stable install folder is only a bootstrap
     # process: it copies the app and immediately starts the real process. Do
