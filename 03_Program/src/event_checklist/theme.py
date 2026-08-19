@@ -248,6 +248,7 @@ def application_stylesheet() -> str:
     QLabel#CalendarTaskName {{ color: {c['fg_neutral']}; font-size: 15px; font-weight: 700; }}
     QLabel#StatusBadge {{ border-radius: 9px; padding: 3px 8px; font-size: 12px; font-weight: 700; }}
     QPushButton[compact="true"] {{ min-height: 30px; padding: 0 10px; border-radius: 7px; font-size: 12px; }}
+    QPushButton[compact="true"][calendarCardAction="true"] {{ min-height: 22px; max-height: 22px; padding: 0 7px; border-radius: 6px; font-size: 11px; }}
     QPushButton[success="true"] {{ color: {c['positive']}; background: {c['positive_weak']}; border-color: #B9DEC9; }}
     QPushButton[warning="true"] {{ color: {c['warning']}; background: {c['warning_weak']}; border-color: #E9D77E; }}
     QDialog {{ background: {c['bg_basement']}; }}

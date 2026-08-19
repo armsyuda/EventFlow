@@ -38,7 +38,7 @@ class EventService:
         if not name:
             raise ValueError("행사명을 입력하세요.")
         if end_date and end_date < start_date:
-            raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+            raise ValueError("행사 마감일은 행사 시작일보다 빠를 수 없습니다.")
         ids = list(dict.fromkeys(int(value) for value in selected_master_ids))
         imported_ids = list(dict.fromkeys(int(value) for value in source_task_ids))
         if source_event_id is not None:
@@ -85,8 +85,8 @@ class EventService:
             cursor = conn.execute(
                 """INSERT INTO events(name,start_date,end_date,location,organizer,budget,budget_tax_mode,pm_vendor_id)
                    VALUES (?,?,?,?,?,?,?,?)""",
-                (name, start_date.isoformat(), end_date.isoformat() if end_date else None, location.strip(),
-                 organizer.strip(), budget, budget_tax_mode, pm_vendor_id),
+                (name, start_date.isoformat(), end_date.isoformat() if end_date else None,
+                 location.strip(), organizer.strip(), budget, budget_tax_mode, pm_vendor_id),
             )
             event_id = int(cursor.lastrowid)
             conn.executemany(
@@ -146,7 +146,7 @@ class EventService:
         if not name.strip():
             raise ValueError("행사명을 입력하세요.")
         if end_date and end_date < start_date:
-            raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+            raise ValueError("행사 마감일은 행사 시작일보다 빠를 수 없습니다.")
         with self.db.transaction() as conn:
             conn.execute(
                 """UPDATE events SET name=?,start_date=?,end_date=?,location=?,organizer=?,budget=?,budget_tax_mode=?,pm_vendor_id=?,

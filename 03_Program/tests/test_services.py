@@ -18,6 +18,20 @@ def test_create_event_only_selected_and_snapshot_is_stable(db):
     assert service.list_tasks(event_id)[0]["name"] == first_name
 
 
+def test_event_start_and_end_dates_are_validated(db):
+    service = EventService(db)
+    master = db.one("SELECT id FROM master_items ORDER BY sort_order LIMIT 1")
+    event_id = service.create_event(
+        "3일 행사", date(2026, 9, 10), date(2026, 9, 12), [master["id"]],
+    )
+    event = service.get_event(event_id)
+    assert (event["start_date"], event["end_date"]) == ("2026-09-10", "2026-09-12")
+    with pytest.raises(ValueError, match="행사 마감일"):
+        service.update_event(
+            event_id, "3일 행사", date(2026, 9, 12), date(2026, 9, 10),
+        )
+
+
 def test_tasks_and_calendar_filter_vendor_and_pm_independently(db):
     service = EventService(db)
     masters = db.query("SELECT id FROM master_items ORDER BY sort_order LIMIT 3")

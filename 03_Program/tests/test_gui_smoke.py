@@ -7,7 +7,7 @@ from time import perf_counter
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QItemSelectionModel, QRect, Qt
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QCalendarWidget, QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QStyleOptionViewItem, QTableWidgetSelectionRange
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QCalendarWidget, QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QStyleOptionViewItem, QTableWidgetItem, QTableWidgetSelectionRange
 from PySide6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox
 from PySide6.QtTest import QTest
 
@@ -210,7 +210,7 @@ def test_quantity_input_uses_whole_number_without_arrows():
     assert quantity.alignment() & Qt.AlignmentFlag.AlignHCenter
 
 
-def test_calendar_card_completion_and_quick_postpone_actions():
+def test_calendar_card_uses_two_rows_with_a_single_postpone_action():
     app = QApplication.instance() or QApplication([])
     today = date.today()
     task = {
@@ -223,9 +223,10 @@ def test_calendar_card_completion_and_quick_postpone_actions():
     card.postpone_requested.connect(lambda task_id, value: postponed.append((task_id, value)))
     buttons = {button.text(): button for button in card.findChildren(QPushButton)}
     buttons["완료 처리"].click()
-    buttons["내일까지"].click()
     assert completed == [(11, True)]
-    assert postponed == [(11, today + timedelta(days=1))]
+    assert postponed == []
+    assert "마감일 연기" in buttons
+    assert all(today.isoformat() not in label.text() for label in card.findChildren(QLabel))
 
 
 def test_calendar_postpone_actions_only_appear_for_today_deadline():
@@ -238,9 +239,7 @@ def test_calendar_postpone_actions_only_appear_for_today_deadline():
     card = CalendarTaskCard(task)
     labels = {button.text() for button in card.findChildren(QPushButton)}
     assert "완료 처리" in labels
-    assert "내일까지" not in labels
-    assert "모레까지" not in labels
-    assert "날짜 선택" not in labels
+    assert "마감일 연기" not in labels
 
 
 def test_checklist_loads_new_global_contacts_and_creates_calendars_lazily(tmp_path):
@@ -754,6 +753,21 @@ def test_checklist_order_column_stays_fixed_when_columns_fit(tmp_path):
     assert page.table.horizontalHeader().sectionResizeMode(0) == page.table.horizontalHeader().ResizeMode.Fixed
     assert [page.table.item(row, 0).text() for row in range(3)] == ["1", "2", "3"]
     page.close(); db.close()
+
+
+def test_fit_columns_wraps_minor_category_and_task_name_instead_of_clipping():
+    app = QApplication.instance() or QApplication([])
+    table = FastEditableTable(1, 2)
+    table.setProperty("fitWrapColumns", [0, 1])
+    minor = QTableWidgetItem("")
+    minor.setData(GROUP_MINOR_ROLE, "길어진 중분류 이름")
+    task = QTableWidgetItem("매우 긴 항목 이름도 열 너비에 맞춰 여러 줄로 표시")
+    table.setItem(0, 0, minor); table.setItem(0, 1, task)
+    table.setColumnWidth(0, 260); table.setColumnWidth(1, 360)
+    table.resize(150, 100); table.show(); app.processEvents()
+    fit_table_to_view(table)
+    assert table.rowHeight(0) > 48
+    table.close()
 
 
 def test_master_order_column_matches_checklist_fixed_component(tmp_path):

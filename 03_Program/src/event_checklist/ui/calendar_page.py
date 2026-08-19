@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, timedelta
+from datetime import date
 
 from PySide6.QtCore import QDate, QEvent, QPoint, QTimer, Qt, Signal
-from PySide6.QtWidgets import QCalendarWidget, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCalendarWidget, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter, QVBoxLayout, QWidget
 
 from ..pdf_export import export_calendar_pdf
 from ..theme import status_color
@@ -19,6 +19,21 @@ CATEGORY_CARD_BORDERS = {
     "홍보": "#D4C8E6",
     "운영": "#E6D8AE",
 }
+
+
+class ElidedCardTitle(QLabel):
+    """A one-line card title that never pushes the status badge outside its row."""
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        self.setText(text)
+        self.setToolTip(text)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
+
+    def resizeEvent(self, event):
+        self.setText(self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, self.width()))
+        super().resizeEvent(event)
 
 
 class CalendarTaskCard(QFrame):
@@ -42,35 +57,30 @@ class CalendarTaskCard(QFrame):
         self.setStyleSheet(
             f"QFrame#CalendarTaskCard{{background:{background};border:{2 if due_today else 1}px solid {border};border-radius:10px;}}"
         )
-        layout = QVBoxLayout(self); layout.setContentsMargins(14, 11, 14, 11); layout.setSpacing(7)
-        top = QHBoxLayout()
-        name = QLabel(task["name"]); name.setObjectName("CalendarTaskName"); name.setWordWrap(True)
+        layout = QVBoxLayout(self); layout.setContentsMargins(9, 4, 9, 4); layout.setSpacing(2)
+        top = QHBoxLayout(); top.setContentsMargins(0, 0, 0, 0); top.setSpacing(6)
+        name = ElidedCardTitle(task["name"]); name.setObjectName("CalendarTaskName")
         badge_text = f"지연 · {task['status']}" if overdue else ("오늘 마감" if due_today else task["status"])
         fg, bg = (("#C9342C", "#FDECEC") if overdue else
                   (("#B54708", "#FFF2D6") if due_today else status_color(task["status"])))
         badge = QLabel(badge_text); badge.setObjectName("StatusBadge"); badge.setStyleSheet(f"color:{fg};background:{bg};")
+        badge.setFixedHeight(20); badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top.addWidget(name, 1); top.addWidget(badge); layout.addLayout(top)
-        meta = QLabel(f"{task['major']} · {task['planned_start']} ~ {task['due_date']} · {task['status']}")
-        meta.setObjectName("Muted"); layout.addWidget(meta)
-        if due_today:
-            due_guide = QLabel("오늘까지 완료하거나 아래에서 마감일을 연장하세요.")
-            due_guide.setObjectName("DueTodayGuide")
-            layout.addWidget(due_guide)
-        actions = QHBoxLayout(); actions.setSpacing(5)
+        actions = QHBoxLayout(); actions.setContentsMargins(0, 0, 0, 0); actions.setSpacing(6)
         complete = QPushButton("↩ 완료 취소" if task["status"] == "완료" else "완료 처리")
         complete.setProperty("compact", True)
+        complete.setProperty("calendarCardAction", True)
+        complete.setFixedHeight(22)
         complete.setProperty("success", task["status"] == "완료")
         complete.setProperty("primary", task["status"] != "완료")
         complete.clicked.connect(lambda: self.completion_requested.emit(self.task_id, task["status"] != "완료"))
         actions.addWidget(complete)
         if due_today:
-            tomorrow = QPushButton("내일까지"); tomorrow.setProperty("compact", True); tomorrow.setProperty("warning", True)
-            day_after = QPushButton("모레까지"); day_after.setProperty("compact", True); day_after.setProperty("warning", True)
-            choose = QPushButton("날짜 선택"); choose.setProperty("compact", True)
-            tomorrow.clicked.connect(lambda: self.postpone_requested.emit(self.task_id, date.today() + timedelta(days=1)))
-            day_after.clicked.connect(lambda: self.postpone_requested.emit(self.task_id, date.today() + timedelta(days=2)))
-            choose.clicked.connect(lambda: self._open_calendar(choose))
-            actions.addWidget(tomorrow); actions.addWidget(day_after); actions.addWidget(choose)
+            postpone = QPushButton("마감일 연기")
+            postpone.setProperty("compact", True); postpone.setProperty("warning", True)
+            postpone.setProperty("calendarCardAction", True); postpone.setFixedHeight(22)
+            postpone.clicked.connect(lambda: self._open_calendar(postpone))
+            actions.addWidget(postpone)
         actions.addStretch(); layout.addLayout(actions)
 
     def _open_calendar(self, anchor):
@@ -209,6 +219,8 @@ class CalendarPage(QWidget):
         first = date(self.calendar.year, self.calendar.month, 1)
         last = date(self.calendar.year, self.calendar.month, calendar.monthrange(self.calendar.year, self.calendar.month)[1])
         self.calendar.set_tasks(self.service.calendar_range(first, last, self.event_id) if self.event_id else [])
+        event = self.service.get_event(self.event_id) if self.event_id else None
+        self.calendar.set_event_period(event if event and event["start_date"] and event["end_date"] else None)
 
     def refresh_selected(self, selected=None):
         selected = selected or self.calendar.selected
@@ -220,7 +232,7 @@ class CalendarPage(QWidget):
         self.empty.hide(); self.list.show()
         for task in tasks:
             due_today = task["status"] != "완료" and task["due_date"] == date.today().isoformat()
-            item = QListWidgetItem(); item.setSizeHint(item.sizeHint().__class__(0, 148 if due_today else 112)); self.list.addItem(item)
+            item = QListWidgetItem(); item.setSizeHint(item.sizeHint().__class__(0, 56)); self.list.addItem(item)
             card = CalendarTaskCard(task, self.list)
             card.completion_requested.connect(self._set_completed)
             card.postpone_requested.connect(self._postpone)

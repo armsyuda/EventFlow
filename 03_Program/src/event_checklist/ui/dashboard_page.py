@@ -17,7 +17,7 @@ class EventCard(QFrame):
         self.setToolTip("클릭하여 이 행사를 엽니다.")
         layout = QHBoxLayout(self); layout.setContentsMargins(18, 14, 14, 14)
         text = QVBoxLayout(); name = QLabel(event["name"]); name.setObjectName("EventCardTitle")
-        dates = QLabel(f"준비 {event['start_date']}  →  행사 {event['end_date'] or event['start_date']}"); dates.setObjectName("Muted")
+        dates = QLabel(f"행사 {event['start_date']}  →  {event['end_date'] or event['start_date']}"); dates.setObjectName("Muted")
         text.addWidget(name); text.addWidget(dates); layout.addLayout(text, 1)
         rate = QLabel(f"진행률 {progress}%"); rate.setObjectName("Muted")
         layout.addWidget(rate)
@@ -96,7 +96,7 @@ class DashboardPage(QWidget):
         event = self.service.get_event(event_id)
         if not event: self.set_event(None); return
         self.views.setCurrentIndex(1); self.overview_title.setText(event["name"])
-        self.overview_dates.setText(f"준비 {event['start_date']}  →  행사 {event['end_date'] or event['start_date']}")
+        self.overview_dates.setText(f"행사 {event['start_date']}  →  {event['end_date'] or event['start_date']}")
         data = self.service.dashboard(event_id)
         for key, card in self.kpis.items(): card.set_value(data.get(key) or 0)
         progress = round((data.get("progress") or 0) * 100); self.progress_text.setText(f"{progress}% · {data.get('completed') or 0}/{data.get('managed') or 0}개 완료")

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 
 class Database:
@@ -342,6 +342,29 @@ class Database:
             if "job_title" not in contact_columns:
                 self.conn.execute("ALTER TABLE contacts ADD COLUMN job_title TEXT NOT NULL DEFAULT ''")
             version = 8
+        if version == 8:
+            event_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(events)")}
+            if "event_start_date" not in event_columns:
+                self.conn.execute("ALTER TABLE events ADD COLUMN event_start_date TEXT")
+            if "event_end_date" not in event_columns:
+                self.conn.execute("ALTER TABLE events ADD COLUMN event_end_date TEXT")
+            # 이전 버전에는 행사 마지막 날만 기록했다. 기존 데이터는 하루 행사로
+            # 보존하고, 여러 날 행사는 수정 화면에서 정확한 시작·마감일을 입력한다.
+            self.conn.execute(
+                "UPDATE events SET event_start_date=end_date, event_end_date=end_date "
+                "WHERE end_date IS NOT NULL AND event_start_date IS NULL"
+            )
+            version = 9
+        if version == 9:
+            # v9의 별도 행사 기간을 표준 시작일·마감일로 승격한다.
+            # 준비기간/최종 행사일 개념은 더 이상 유지하지 않는다.
+            self.conn.execute(
+                "UPDATE events SET start_date=COALESCE(event_start_date,start_date), "
+                "end_date=COALESCE(event_end_date,event_start_date,end_date)"
+            )
+            self.conn.execute("ALTER TABLE events DROP COLUMN event_start_date")
+            self.conn.execute("ALTER TABLE events DROP COLUMN event_end_date")
+            version = 10
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"DB 마이그레이션 경로가 없습니다: {from_version} → {SCHEMA_VERSION}")
         self.conn.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))

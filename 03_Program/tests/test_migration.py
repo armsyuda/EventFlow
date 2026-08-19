@@ -27,8 +27,9 @@ def test_v1_database_migrates_and_keeps_safety_copy(tmp_path):
     db = Database(path)
     columns = {row["name"] for row in db.query("PRAGMA table_info(master_items)")}
     assert {"default_vendor_id", "default_assignee_id"} <= columns
-    assert db.one("SELECT version FROM schema_info")["version"] == 8
+    assert db.one("SELECT version FROM schema_info")["version"] == 10
     assert {"pm_vendor_id"} <= {row["name"] for row in db.query("PRAGMA table_info(events)")}
+    assert {"event_start_date", "event_end_date"}.isdisjoint({row["name"] for row in db.query("PRAGMA table_info(events)")})
     assert {"pm_assignee_id"} <= {row["name"] for row in db.query("PRAGMA table_info(event_tasks)")}
     assert db.one("SELECT COUNT(*) count FROM master_items")["count"] == 120
     db.close()
@@ -70,7 +71,7 @@ def test_v3_cost_migrates_to_unit_price_and_keeps_pre_v3_copy(tmp_path):
     db.execute("UPDATE schema_info SET version=3"); db.close()
     migrated = Database(path)
     assert migrated.one("SELECT unit_price FROM event_tasks WHERE event_id=?", (event_id,))["unit_price"] == 3000
-    assert migrated.one("SELECT version FROM schema_info")["version"] == 8
+    assert migrated.one("SELECT version FROM schema_info")["version"] == 10
     migrated.close()
     assert (tmp_path / "event_checklist.pre-v3.db").exists()
 
@@ -91,7 +92,7 @@ def test_v7_contacts_gain_blank_job_title_without_losing_existing_values(tmp_pat
     contact = migrated.one("SELECT name,phone,job_title,role_note FROM contacts WHERE id=?", (contact_id,))
     assert "job_title" in columns
     assert tuple(contact) == ("legacy person", "010-1234", "", "field operation")
-    assert migrated.one("SELECT version FROM schema_info")["version"] == 8
+    assert migrated.one("SELECT version FROM schema_info")["version"] == 10
     migrated.close()
     assert (tmp_path / "v7-contacts.pre-v7.db").exists()
 

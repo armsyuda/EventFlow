@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
-from PySide6.QtCore import QDate, QEasingCurve, QEvent, QLocale, QObject, QPoint, QPropertyAnimation, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QRegion
+from PySide6.QtCore import QDate, QEasingCurve, QEvent, QLocale, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPalette, QPen, QRegion, QTextLayout, QTextOption
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QCalendarWidget, QComboBox, QDateEdit,
     QDialog, QDoubleSpinBox, QFrame, QGraphicsOpacityEffect, QHeaderView, QHBoxLayout, QInputDialog,
@@ -762,9 +762,10 @@ class SpreadsheetItemDelegate(QStyledItemDelegate):
 class GroupSeparatorDelegate(SpreadsheetItemDelegate):
     """대분류·중분류가 바뀌는 행의 위쪽 경계를 단계별로 강조한다."""
 
-    def __init__(self, anchor_column: int = 1, parent=None):
+    def __init__(self, anchor_column: int = 1, parent=None, wrap_columns=()):
         super().__init__(parent)
         self.anchor_column = anchor_column
+        self.wrap_columns = {int(column) for column in wrap_columns}
 
     def separator_level(self, model, row: int) -> int:
         if row <= 0:
@@ -782,7 +783,18 @@ class GroupSeparatorDelegate(SpreadsheetItemDelegate):
         return 0
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
-        super().paint(painter, option, index)
+        if index.column() in self.wrap_columns:
+            wrapped = QStyleOptionViewItem(option)
+            self.initStyleOption(wrapped, index)
+            # Qt 기본 delegate는 행 높이가 늘어나면 세 줄 이상도 그린다. 이 열은
+            # 항상 두 줄만 쓰도록 배경과 텍스트를 분리해 직접 그린다.
+            text = wrapped.text
+            wrapped.text = ""
+            style = wrapped.widget.style() if wrapped.widget is not None else QApplication.style()
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, wrapped, painter, wrapped.widget)
+            self._draw_two_line_text(painter, option, text, wrapped)
+        else:
+            super().paint(painter, option, index)
         level = self.separator_level(index.model(), index.row())
         if not level:
             return
@@ -791,6 +803,34 @@ class GroupSeparatorDelegate(SpreadsheetItemDelegate):
         painter.setPen(QPen(color, 3 if level == 2 else 2))
         y = option.rect.top() + 1
         painter.drawLine(option.rect.left(), y, option.rect.right(), y)
+        painter.restore()
+
+    @staticmethod
+    def _draw_two_line_text(painter: QPainter, option: QStyleOptionViewItem, text: str, styled: QStyleOptionViewItem) -> None:
+        if not text:
+            return
+        rect = option.rect.adjusted(6, 3, -6, -3)
+        layout = QTextLayout(text, styled.font)
+        text_option = QTextOption()
+        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        text_option.setAlignment(styled.displayAlignment)
+        layout.setTextOption(text_option)
+        color = styled.palette.color(
+            QPalette.ColorRole.HighlightedText if styled.state & QStyle.StateFlag.State_Selected else QPalette.ColorRole.Text
+        )
+        painter.save()
+        painter.setPen(color)
+        layout.beginLayout()
+        y = 0.0
+        for _ in range(2):
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(rect.width())
+            line.setPosition(QPointF(0, y))
+            y += line.height()
+        layout.endLayout()
+        layout.draw(painter, QPointF(rect.left(), rect.top() + max(0, (rect.height() - y) / 2)))
         painter.restore()
 
 
@@ -1069,6 +1109,35 @@ def configure_resizable_table(table: QTableWidget, widths: list[int]) -> None:
     configure_data_table(table, widths)
 
 
+class TwoLineLabel(QLabel):
+    """A category label that uses at most two wrapped lines, regardless of cell height."""
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        self.setText(text)
+        self.setToolTip(text)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(QPalette.ColorRole.Text))
+        layout = QTextLayout(self._full_text, self.font())
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        option.setAlignment(self.alignment())
+        layout.setTextOption(option)
+        layout.beginLayout()
+        y = 0.0
+        for _ in range(2):
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(self.width())
+            line.setPosition(QPointF(0, y))
+            y += line.height()
+        layout.endLayout()
+        layout.draw(painter, QPointF(0, max(0, (self.height() - y) / 2)))
+
+
 class CategoryCell(QWidget):
     """병합된 대분류/중분류 셀에 얹는 위젯. 이름 라벨 + 작은 드래그 핸들로 구성.
 
@@ -1096,8 +1165,12 @@ class CategoryCell(QWidget):
         layout.setContentsMargins(4, 2, 4, 3)
         layout.setSpacing(0)
         # 중분류(minor) 셀에는 중분류 이름만, 대분류(minor None) 셀에는 대분류 이름만 표시한다.
-        self.label = QLabel(str(minor if minor is not None else major))
+        self.label = TwoLineLabel(str(minor if minor is not None else major))
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setWordWrap(True)
+        # 열 폭이 매우 좁아도 중분류는 두 줄까지만 사용한다. 드래그 핸들 공간은
+        # 항상 남겨 텍스트와 핸들이 서로 겹치지 않는다.
+        self.label.setMaximumHeight(40)
         self.label.setStyleSheet("background:transparent; font-weight:500;")
         # 대분류는 병합 영역이 세로로 길어 화면 밖으로 벗어나 이름이 가려지지 않도록
         # 이름 라벨을 병합 열의 세로 중앙에 배치한다. 중분류는 위쪽에 배치.
@@ -1252,13 +1325,16 @@ def configure_editable_table(
     *,
     grouped: bool = False,
     anchor_column: int = 1,
+    wrap_columns=(),
 ) -> None:
     """Shared presentation contract for spreadsheet-like editable tables."""
     configure_data_table(table, widths)
     table.setProperty("embeddedEditors", True)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setWordWrap(True)
+    table.setTextElideMode(Qt.TextElideMode.ElideNone)
     if grouped:
-        table.setItemDelegate(GroupSeparatorDelegate(anchor_column, table))
+        table.setItemDelegate(GroupSeparatorDelegate(anchor_column, table, wrap_columns))
 
 
 def fit_table_to_view(table: QTableWidget, minimum: int = 58) -> None:
@@ -1287,3 +1363,31 @@ def fit_table_to_view(table: QTableWidget, minimum: int = 58) -> None:
         widths[-1] += available - sum(widths)
     for column, width in zip(flexible, widths):
         table.setColumnWidth(column, width)
+    _resize_wrapped_rows_after_fit(table)
+
+
+def _resize_wrapped_rows_after_fit(table: QTableWidget) -> None:
+    """Keep category and task names readable when fit-to-view narrows their columns."""
+    columns = table.property("fitWrapColumns") or []
+    if not columns:
+        return
+    table.setWordWrap(True)
+    for row in range(table.rowCount()):
+        required_height = 48
+        for column in columns:
+            item = table.item(row, int(column))
+            if item is None:
+                continue
+            category_name = item.data(GROUP_MINOR_ROLE) if not item.text() else None
+            text = item.text() or category_name or ""
+            if not text:
+                continue
+            available = max(24, table.columnWidth(int(column)) - 12)
+            lines = min(2, max(1, (QFontMetrics(item.font()).horizontalAdvance(str(text)) + available - 1) // available))
+            # 중분류 셀은 라벨 2줄과 22px 드래그 핸들을 함께 담아야 한다.
+            height = 34 + lines * 20 if category_name else 16 + lines * 20
+            required_height = max(required_height, min(96, height))
+        table.setRowHeight(row, required_height)
+    # 병합 셀 위젯의 레이아웃도 새 행 높이를 즉시 다시 계산해야 실제 줄바꿈이 반영된다.
+    table.doItemsLayout()
+    table.viewport().update()

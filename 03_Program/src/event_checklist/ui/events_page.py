@@ -145,8 +145,10 @@ class EventsPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         configure_editable_table(
-            self.table, [48, 92, 116, 190, 570, 64, 72, 112, 125, 125, 155, 145, 165, 150], grouped=True
+            self.table, [48, 92, 116, 190, 570, 64, 72, 112, 125, 125, 155, 145, 165, 150],
+            grouped=True, wrap_columns=(2, 3),
         )
+        self.table.setProperty("fitWrapColumns", [2, 3])  # 중분류, 항목
         self.table.set_fixed_columns({0: 48})
         self.table.set_left_columns({4})  # 세부내용은 좌측 정렬
         self.table.cellDoubleClicked.connect(self._open_cell_editor)

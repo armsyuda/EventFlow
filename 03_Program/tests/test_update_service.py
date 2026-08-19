@@ -158,3 +158,11 @@ def test_custom_installer_location_is_recognized(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
 
     assert install_service.is_fixed_installation(executable)
+
+
+def test_review_build_runs_directly_without_becoming_the_installed_app(tmp_path):
+    executable = tmp_path / "EventFlow_Current" / "EventFlow.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    assert install_service.is_review_build(executable)
+    assert not install_service.is_fixed_installation(executable)

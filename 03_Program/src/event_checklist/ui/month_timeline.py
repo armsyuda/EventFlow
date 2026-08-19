@@ -23,6 +23,7 @@ class MonthTimeline(QWidget):
         self.year, self.month = today.year, today.month
         self.selected = today
         self.tasks = []
+        self.event_period = None
         self._weeks = []
         self._hits: list[tuple[QRectF, str]] = []
         self.setMouseTracking(True)
@@ -38,6 +39,10 @@ class MonthTimeline(QWidget):
 
     def set_tasks(self, tasks):
         self.tasks = [dict(row) for row in tasks]
+        self.update()
+
+    def set_event_period(self, event):
+        self.event_period = dict(event) if event else None
         self.update()
 
     def _calendar_weeks(self):
@@ -93,7 +98,9 @@ class MonthTimeline(QWidget):
         for row in range(7): painter.drawLine(QPoint(0, int(header_h + row * row_h)), QPoint(self.width(), int(header_h + row * row_h)))
 
         lane_h, top_gap = 20, 29
-        lane_capacity = max(1, int((row_h - top_gap - 17) // (lane_h + 2)))
+        event_h = 22 if self.event_period else 0
+        task_top_gap = top_gap + event_h + (3 if event_h else 0)
+        lane_capacity = max(1, int((row_h - task_top_gap - 17) // (lane_h + 2)))
         for week_index, week in enumerate(self._weeks):
             y = header_h + week_index * row_h
             for column, value in enumerate(week):
@@ -111,10 +118,45 @@ class MonthTimeline(QWidget):
                     painter.setPen(QColor(color)); painter.setFont(QFont("Malgun Gothic", 9))
                     painter.drawText(QRectF(x + 7, y + 5, cell_w - 14, 18), Qt.AlignmentFlag.AlignLeft, str(value.day))
             visible, hidden = self._week_segments(week, lane_capacity)
+            if self.event_period:
+                event_end = date.fromisoformat(self.event_period["end_date"])
+                event_start = date.fromisoformat(self.event_period["start_date"])
+                if event_end >= week[0] and event_start <= week[-1]:
+                    first = max(event_start, week[0])
+                    last = min(event_end, week[-1])
+                    first_column = (first - week[0]).days
+                    last_column = (last - week[0]).days
+                    event_bar = QRectF(
+                        first_column * cell_w + 3, y + top_gap,
+                        (last_column - first_column + 1) * cell_w - 6, event_h,
+                    )
+                    painter.setPen(QPen(QColor("#B42318"), 1))
+                    painter.setBrush(QColor("#E5484D"))
+                    painter.drawRoundedRect(event_bar, 4, 4)
+                    painter.setPen(QColor("#FFFFFF"))
+                    painter.setFont(QFont("Malgun Gothic", 8, QFont.Weight.Bold))
+                    metrics = QFontMetrics(painter.font())
+                    available = max(1, int(event_bar.width()) - 10)
+                    repeat_count = min(3, max(1, available // max(150, metrics.horizontalAdvance(str(self.event_period["name"])) + 48)))
+                    slice_width = available / repeat_count
+                    for repeat in range(repeat_count):
+                        label_rect = QRectF(
+                            event_bar.left() + 5 + repeat * slice_width, event_bar.top(),
+                            slice_width - 4, event_bar.height(),
+                        )
+                        label = metrics.elidedText(
+                            str(self.event_period["name"]), Qt.TextElideMode.ElideRight,
+                            max(1, int(label_rect.width())),
+                        )
+                        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextSingleLine, label)
+                    self._hits.append((
+                        event_bar,
+                        f"행사: {self.event_period['name']}\n{event_start.isoformat()} ~ {event_end.isoformat()}",
+                    ))
             for lane, task, first, last, is_start, is_end in visible:
                 x = first * cell_w + (4 if is_start else 0)
                 width = (last - first + 1) * cell_w - (8 if is_start and is_end else 4)
-                bar = QRectF(x, y + top_gap + lane * (lane_h + 2), width, lane_h)
+                bar = QRectF(x, y + task_top_gap + lane * (lane_h + 2), width, lane_h)
                 base = QColor(CATEGORY_COLORS.get(task["major"], "#E5E7EB"))
                 if task["status"] == "완료": base.setAlpha(120)
                 painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(base)

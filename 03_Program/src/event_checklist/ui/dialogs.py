@@ -4,7 +4,7 @@ from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QButtonGroup, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTextEdit, QTreeWidget,
     QRadioButton, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -67,17 +67,8 @@ class EventDialog(QDialog):
         self.name_edit.setPlaceholderText("예: 제33회 시민의 날")
         self.start_edit = DirectDateEdit()
         self.start_edit.setDate(QDate.fromString(event["start_date"], "yyyy-MM-dd") if event else QDate.currentDate())
-        self.end_enabled = QCheckBox("최종 행사일 지정")
         self.end_edit = DirectDateEdit()
-        self.end_edit.setDate(QDate.fromString(event["end_date"], "yyyy-MM-dd") if event and event["end_date"] else self.start_edit.date().addDays(60))
-        self.end_enabled.setChecked(bool(event and event["end_date"]) or not event)
-        self.end_edit.setEnabled(self.end_enabled.isChecked())
-        self.end_enabled.toggled.connect(self.end_edit.setEnabled)
-        end_row = QWidget()
-        end_layout = QHBoxLayout(end_row)
-        end_layout.setContentsMargins(0, 0, 0, 0)
-        end_layout.addWidget(self.end_enabled)
-        end_layout.addWidget(self.end_edit, 1)
+        self.end_edit.setDate(QDate.fromString(event["end_date"], "yyyy-MM-dd") if event and event["end_date"] else self.start_edit.date())
         self.location_edit = QLineEdit(event["location"] if event else "")
         self.organizer_edit = QLineEdit(event["organizer"] if event else "")
         self.budget_edit = QDoubleSpinBox()
@@ -99,8 +90,8 @@ class EventDialog(QDialog):
         if event:
             self.pm_vendor.setCurrentIndex(max(0, self.pm_vendor.findData(event["pm_vendor_id"])))
         form.addRow("행사명 *", self.name_edit)
-        form.addRow("준비 시작일 *", self.start_edit)
-        form.addRow("최종 행사일", end_row)
+        form.addRow("행사 시작일 *", self.start_edit)
+        form.addRow("행사 마감일 *", self.end_edit)
         form.addRow("장소", self.location_edit)
         form.addRow("주최 / 주관", self.organizer_edit)
         form.addRow("예산", self.budget_edit)
@@ -275,7 +266,7 @@ class EventDialog(QDialog):
 
     def values(self) -> dict:
         start = self.start_edit.date().toPython()
-        end = self.end_edit.date().toPython() if self.end_enabled.isChecked() else None
+        end = self.end_edit.date().toPython()
         budget = self.budget_edit.value() or None
         return {
             "name": self.name_edit.text().strip(),
@@ -324,8 +315,9 @@ class EventDialog(QDialog):
             QMessageBox.warning(self, "입력 확인", "행사명을 입력하세요.")
             self.name_edit.setFocus()
             return
-        if values["end_date"] and values["end_date"] < values["start_date"]:
-            QMessageBox.warning(self, "입력 확인", "최종 행사일은 준비 시작일보다 빠를 수 없습니다.")
+        if values["end_date"] < values["start_date"]:
+            QMessageBox.warning(self, "입력 확인", "행사 마감일은 행사 시작일보다 빠를 수 없습니다.")
+            self.end_edit.setFocus()
             return
         if values["budget"] and values["budget_tax_mode"] == "UNSET":
             QMessageBox.warning(self, "입력 확인", "총예산이 있으면 부가세 포함 또는 별도를 선택하세요.")

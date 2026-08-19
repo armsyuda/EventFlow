@@ -38,10 +38,10 @@ def main(argv=None) -> int:
     # A package started outside the stable install folder is only a bootstrap
     # process: it copies the app and immediately starts the real process. Do
     # not show a splash here, otherwise users see one splash per process.
-    from .install_service import is_fixed_installation, is_packaged_app, launch_fixed_installation, repair_shortcuts
+    from .install_service import is_fixed_installation, is_packaged_app, is_review_build, launch_fixed_installation, repair_shortcuts
 
     normal_start = not args.smoke_test and not args.screenshot
-    if is_packaged_app() and normal_start and not is_fixed_installation():
+    if is_packaged_app() and normal_start and not is_fixed_installation() and not is_review_build():
         launch_fixed_installation(os.getpid())
         return 0
     if is_packaged_app() and normal_start:

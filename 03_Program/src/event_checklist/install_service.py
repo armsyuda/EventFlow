@@ -10,6 +10,7 @@ from .config import install_dir, update_dir
 
 EXECUTABLE_NAME = "EventFlow.exe"
 INSTALL_MARKER_NAME = ".eventflow-installed"
+REVIEW_BUILD_FOLDER_NAME = "EventFlow_Current"
 
 
 def current_executable() -> Path:
@@ -28,6 +29,12 @@ def is_fixed_installation(executable: Path | None = None) -> bool:
         executable.parent == install_dir().resolve()
         or (executable.parent / INSTALL_MARKER_NAME).is_file()
     )
+
+
+def is_review_build(executable: Path | None = None) -> bool:
+    """Return true for the local review build without registering an installation."""
+    executable = (executable or current_executable()).resolve()
+    return executable.name.casefold() == EXECUTABLE_NAME.casefold() and executable.parent.name == REVIEW_BUILD_FOLDER_NAME
 
 
 def _ps(value: Path | str) -> str:
